@@ -1,0 +1,29 @@
+﻿# Carpetas generadas automáticamente
+dist/
+build/
+__pycache__/
+
+# Playwright y navegadores
+ms-playwright/
+node_modules/
+
+# Archivos compilados de Python
+*.pyc
+*.pyo
+*.pyd
+
+# Archivos Excel temporales
+~$*.xlsx
+
+# Archivos innecesarios
+MCC_Info.xlsx
+AI_Results/
+error_*.png
+prueba*.py
+
+# Logs
+*.log
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db

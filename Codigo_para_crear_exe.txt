@@ -1,0 +1,29 @@
+Limpieza en power shell , pararse adentro de la carpeta Template y ejecutar lo siguiente 
+
+Remove-Item -Recurse -Force .\build, .\dist -ErrorAction SilentlyContinue
+Remove-Item -Force .\CheckList_BOT.spec -ErrorAction SilentlyContinue
+
+
+
+Crear EXE
+
+pyinstaller --clean --onedir --name "CheckList_BOT" `
+  --add-data "static;static" `
+  --add-data "fonts;fonts" `
+  --add-data "Prompts_AI;Prompts_AI" `
+  --add-data "ms-playwright;ms-playwright" `
+  --add-data "MCC_Info.xlsx;." `
+  --hidden-import flask `
+  --hidden-import asyncio `
+  --hidden-import reportlab `
+  --hidden-import reportlab.pdfgen `
+  --hidden-import reportlab.platypus `
+  --hidden-import playwright `
+  --hidden-import playwright.async_api `
+  --hidden-import pandas `
+  --hidden-import openpyxl `
+  --hidden-import sqlite3 `
+  --hidden-import PIL `
+  --hidden-import requests `
+  --hidden-import tkinter `
+  app_flask_case.py
