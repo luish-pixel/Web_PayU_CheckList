@@ -58,31 +58,46 @@ def index():
 
     if request.method == "POST":
 
-        num_hilos = int(request.form.get("num_hilos", 1))
+        # ======================================
+        # FORM DATA
+        # ======================================
 
-        case_summary = request.form.get("case_summary")
+        num_hilos = 1
+
+        business_mode = request.form.get(
+            "business_mode",
+            "summary"
+        )
+
+        case_summary = (
+            request.form.get("case_summary", "")
+            .strip()
+        )
+
+        underwriting_link = (
+            request.form.get("underwriting_link", "")
+            .strip()
+        )
 
         imagen = request.files.get("imagen")
 
-        # ==============================
+        # ======================================
         # DEV MODE
-        # ==============================
+        # ======================================
 
         if AMBIENTE_GLOBAL == "DEV":
 
             admin_user = config.USERNAME
             admin_pass = config.PASSWORD
 
-        # ==============================
+        # ======================================
         # PROD MODE
-        # ==============================
+        # ======================================
 
         else:
 
             admin_user = request.form.get("admin_user")
             admin_pass = request.form.get("admin_pass")
-
-            
 
             if not admin_user or not admin_pass:
 
@@ -94,9 +109,9 @@ def index():
                     ambiente=AMBIENTE_GLOBAL
                 )
 
-        # ==============================
-        # GUARDAR IMAGEN
-        # ==============================
+        # ======================================
+        # SAVE IMAGE
+        # ======================================
 
         ruta_imagen = None
 
@@ -106,38 +121,74 @@ def index():
 
             os.makedirs(carpeta, exist_ok=True)
 
-            ruta_imagen = os.path.join(carpeta, imagen.filename)
+            ruta_imagen = os.path.join(
+                carpeta,
+                imagen.filename
+            )
 
             imagen.save(ruta_imagen)
 
-        
-        # ==============================
-        # AGREGAR — recibir y guardar el Excel
-        # ==============================
+        # ======================================
+        # SAVE EXCEL
+        # ======================================
+
         excel_file = request.files.get("excel_file")
+
         ruta_excel = None
 
         if excel_file:
-            ruta_excel = os.path.join(config.OUTPUT_FOLDER, excel_file.filename)
+
+            ruta_excel = os.path.join(
+                config.OUTPUT_FOLDER,
+                excel_file.filename
+            )
+
             excel_file.save(ruta_excel)
-        
-        
-        # ==============================
-        # EJECUTAR BOT
-        # ==============================
+
+        # ======================================
+        # BUSINESS MODEL VALIDATION
+        # ======================================
+
+        if business_mode == "summary" and not case_summary:
+
+            mensaje = "⚠️ Summary cannot be empty"
+
+            return render_template_string(
+                HTML_FORM,
+                mensaje=mensaje,
+                ambiente=AMBIENTE_GLOBAL
+            )
+
+        if business_mode == "link" and not underwriting_link:
+
+            mensaje = "⚠️ Underwriting link cannot be empty"
+
+            return render_template_string(
+                HTML_FORM,
+                mensaje=mensaje,
+                ambiente=AMBIENTE_GLOBAL
+            )
+
+        # ======================================
+        # EXECUTE BOT
+        # ======================================
 
         try:
 
             loop = asyncio.new_event_loop()
+
             asyncio.set_event_loop(loop)
 
             mensaje = loop.run_until_complete(
 
                 ejecutar_proceso(
-                    admin_user, admin_pass,
+                    admin_user,
+                    admin_pass,
                     ruta_excel,
                     case_summary,
-                    ruta_imagen, num_hilos
+                    underwriting_link,
+                    ruta_imagen,
+                    num_hilos
                 )
 
             )
@@ -153,7 +204,7 @@ def index():
     )
 
 # ==========================================================
-# BUSCAR PUERTO LIBRE
+# FIND FREE PORT
 # ==========================================================
 
 def find_free_port(start_port=5000, max_tries=20):
@@ -176,7 +227,10 @@ if __name__ == "__main__":
     port = find_free_port()
 
     def open_browser():
-        webbrowser.open_new(f"http://127.0.0.1:{port}")
+
+        webbrowser.open_new(
+            f"http://127.0.0.1:{port}"
+        )
 
     threading.Timer(1, open_browser).start()
 

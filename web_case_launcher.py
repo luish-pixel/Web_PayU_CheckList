@@ -3,89 +3,30 @@
 import asyncio
 import config
 import random
-import threading
 
 
 # ==========================================
-# IMPORTAR las nuevas funciones
+# IMPORTS
 # ==========================================
 from Utilities_Bot_CheckList import (
     test_credentials,
     evidence_collection_process,
     generar_reporte_pdf,
     build_sqlite_from_template,
-    google_search_process,
     get_pending_processes,
-    AI_Process,
-    reset_processing_to_pending,       
-    has_pending_processes,             
-    mark_remaining_processing_as_issue 
+    reset_processing_to_pending,
+    has_pending_processes,
+    mark_remaining_processing_as_issue
 )
 
-def ejecutar_busquedas(sqlite_path, case_number):
-    pendientes = get_pending_processes(sqlite_path)
-
-    procesos_busqueda = [
-        p for p in pendientes
-        if "GOOGLE" in p.upper() or "CRP-" in p.upper() or "MERCHANT_" in p.upper()
-    ]
-
-    if not procesos_busqueda:
-        return
-
-    num_workers = config.SEARCH_WORKERS
-    chunks = [procesos_busqueda[i::num_workers] for i in range(num_workers)]
-
-    hilos = []
-    for i, chunk in enumerate(chunks):
-        if not chunk:
-            continue
-        t = threading.Thread(
-            target=google_search_process,
-            args=(chunk, sqlite_path, case_number, f"Worker_{i+1}")
-        )
-        hilos.append(t)
-        t.start()
-
-    for t in hilos:
-        t.join()    
-
-def ejecutar_ai(sqlite_path, case_number):
-    pendientes = get_pending_processes(sqlite_path)
-
-    procesos_ai = [
-        p for p in pendientes
-        if p.upper().endswith("_AI") or p.upper().endswith("_STRING_AI")
-    ]
-
-    if not procesos_ai:
-        print("✅ No pending AI processes")
-        return
-
-    num_workers = config.AI_WORKERS
-    chunks = [procesos_ai[i::num_workers] for i in range(num_workers)]
-
-    hilos = []
-    for i, chunk in enumerate(chunks):
-        if not chunk:
-            continue
-        t = threading.Thread(
-            target=AI_Process,
-            args=(chunk, sqlite_path, case_number, f"AI_Worker_{i+1}")
-        )
-        hilos.append(t)
-        t.start()
-
-    for t in hilos:
-        t.join()
-
-    print("✅ All AI workers finished")
-    
 async def ejecutar_proceso(
-    admin_user, admin_pass,
+    admin_user,
+    admin_pass,
     ruta_excel,
     case_summary,
-    ruta_imagen, num_hilos
+    underwriting_link,
+    ruta_imagen,
+    num_hilos
 ):
 
     try:
@@ -112,7 +53,7 @@ async def ejecutar_proceso(
         # ======================================
 
         success, df_case, sqlite_path = build_sqlite_from_template(ruta_excel)
-        
+
         if not success:
             return "❌ Could not process Excel template."
 
@@ -203,21 +144,19 @@ async def ejecutar_proceso(
         await asyncio.gather(*tareas_proc)
 
         # ======================================
-        # CRP + MERCHANT GOOGLE SEARCH (CON RONDAS)
+        # CRP + MERCHANT GEMINI SEARCH (WITH ROUNDS)
         # ======================================
 
-        print("🔎 Running CRP searches...")
+        print("🔍 Running CRP / Merchant Gemini searches...")
 
-        # 🔥 Solo revisar procesos CRP y Merchant en las rondas
         CRP_PREFIXES = ["CRP", "Merchant_"]
 
         MAX_ROUNDS = 3
 
         for ronda in range(1, MAX_ROUNDS + 1):
 
-            print(f"\n🔁 === RONDA {ronda}/{MAX_ROUNDS} ===")
+            print(f"\n🔁 === ROUND {ronda}/{MAX_ROUNDS} ===")
 
-            # Verificar si hay CRP/Merchant pendientes antes de lanzar workers
             if not has_pending_processes(sqlite_path, prefixes=CRP_PREFIXES):
                 print("✅ No pending CRP/Merchant processes, skipping round")
                 break
@@ -239,73 +178,32 @@ async def ejecutar_proceso(
 
             await asyncio.gather(*tareas, return_exceptions=True)
 
-            print(f"✅ Ronda {ronda} terminada")
+            print(f"✅ Round {ronda} finished")
 
             if ronda < MAX_ROUNDS:
-                # 🔥 Solo resetear CRP/Merchant, no tocar ADMIN, AI, etc.
-                print(f"🔍 DEBUG reset llamado con sqlite_path={sqlite_path}, prefixes={CRP_PREFIXES}")
                 reseteados = reset_processing_to_pending(sqlite_path, prefixes=CRP_PREFIXES)
                 if reseteados == 0:
-                    print("✅ No quedaron procesos CRP/Merchant en processing, no se necesita otra ronda")
+                    print("✅ No CRP/Merchant processes stuck in processing, no next round needed")
                     break
                 else:
-                    print(f"🔄 {reseteados} procesos reseteados a pending → iniciando ronda {ronda + 1}")
+                    print(f"🔄 {reseteados} processes reset to pending → starting round {ronda + 1}")
                     await asyncio.sleep(random.uniform(15, 30))
             else:
-                # Última ronda → marcar los que siguen en processing como issue
                 mark_remaining_processing_as_issue(sqlite_path)
-                print("🚨 Ronda final completada, procesos restantes marcados como issue")
-
-        # ======================================
-        # AI WORKERS
-        # ======================================
-
-        print("🤖 Running AI processes...")
-
-        print("📊 Snapshot antes de AI:")
-        df_debug = get_pending_processes(sqlite_path)
-        print(df_debug.head(20))
-
-        df_pending_ai = get_pending_processes(sqlite_path)
-
-        ai_count = df_pending_ai[
-            df_pending_ai["process"].str.endswith("_AI")
-        ].shape[0]
-
-        num_ai_workers = min(config.AI_WORKERS, ai_count) if ai_count > 0 else 1
-
-        print(f"🤖 AI processes: {ai_count}")
-        print(f"🤖 AI workers: {num_ai_workers}")
-
-        tareas_ai = []
-
-        for i in range(num_ai_workers):
-
-            task = asyncio.create_task(
-                evidence_collection_process(
-                    df_case,
-                    sqlite_path,
-                    admin_user,
-                    admin_pass,
-                    i + 20,
-                    "AI"
-                )
-            )
-
-            tareas_ai.append(task)
-
-            if i < num_ai_workers - 1:
-                delay = random.randint(3, 6)
-                print(f"⏳ Delay before next AI worker: {delay}s")
-                await asyncio.sleep(delay)
-
-        await asyncio.gather(*tareas_ai)
+                print("🚨 Final round completed, remaining processes marked as issue")
 
         # ======================================
         # GENERATE PDF
         # ======================================
 
-        generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary, ruta_imagen)
+        generar_reporte_pdf(
+            case_number,
+            sqlite_path,
+            admin_user,
+            case_summary,
+            underwriting_link,
+            ruta_imagen
+        )
 
         # ======================================
         # FINAL RESULT

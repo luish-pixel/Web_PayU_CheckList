@@ -11,7 +11,6 @@ import time
 import os
 import random
 import sqlite3
-import urllib.parse
 import unicodedata
 import html
 import re
@@ -41,450 +40,9 @@ from reportlab.pdfbase.ttfonts import TTFont
 # 🔹 Local
 import config
 
-# ==========================================================
-# GET BROWSER AND PAGE INSTANCE
-# ==========================================================
-async def get_browser_and_page(playwright, SF_Pass, SF_User, browser=None, page=None):
 
-    if browser is None or page is None:
 
-        browser = await playwright.chromium.launch(
-            channel="chrome",
-            headless=False
-        )
-        
-        page = await browser.new_page()
 
-        result = await access_SF_website(page, SF_Pass, SF_User)
-
-        # 🔥 Manejo correcto
-        if isinstance(result, tuple):
-            status, message = result
-
-            if not status:
-                return False, browser, page, message
-            else:
-                return True, browser, page
-
-        else:
-            if result:
-                return True, browser, page
-            else:
-                return False, browser, page
-
-    else:
-        return True, browser, page
-
-# ==========================================================
-# ACCESS SALESFORCE WEBSITE AND LOGIN
-# ==========================================================
-async def access_SF_website(page, SF_Pass, SF_User):
-
-    try:
-            #https://payu.lightning.force.com/lightning/r/Report/00OSl00000FOo1RMAT/view
-        await page.goto(
-            "https://payu.lightning.force.com/lightning/page/chatter",
-            timeout=15000
-        )
-
-    except Exception:
-
-        print("❌ Salesforce URL could not be accessed. Check VPN.")
-        sys.exit(0)           
-    
-    try:
-
-        # 🔥 NUEVO: botón Google
-        google_btn = page.locator(
-            "button:has-text('Google Prod (Rapyd)')"
-        )
-
-        okta_btn = page.locator(
-            "#idp_section_buttons button",
-            has_text="OKTA Production"
-        )
-
-        identifier_input = page.locator('input[name="identifier"]')
-
-        MAX_ATTEMPTS = 3
-        TIMEOUT_UI = 5000
-
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-
-            await asyncio.sleep(random.uniform(3, 10))
-            
-            print(f"🔄 Attempt {attempt}/{MAX_ATTEMPTS}")
-
-            await page.wait_for_load_state("domcontentloaded")
-
-            try:
-
-                await page.wait_for_function(
-                    """() =>
-                    document.querySelector('#idp_section_buttons button') ||
-                    document.querySelector('input[name="identifier"]')
-                    """,
-                    timeout=TIMEOUT_UI
-                )
-
-            except:
-                pass
-
-            # =====================================================
-            # 🔥 GOOGLE LOGIN (PRIORIDAD)
-            # =====================================================
-            if await google_btn.count() > 0:
-
-                print("🔐 Google (Rapyd) detected")
-
-                await google_btn.wait_for(state="visible", timeout=15000)
-                await google_btn.click(force=True)
-
-                # ⚠️ Manejo de nueva pestaña
-                context = page.context
-                try:
-                    new_page = await context.wait_for_event("page", timeout=10000)
-                    await new_page.wait_for_load_state()
-                    page = new_page
-                    print("🆕 Switched to Google login tab")
-                except:
-                    print("➡️ Google opened in same tab")
-
-                # =========================
-                # EMAIL
-                # =========================
-                try:
-                    email_input = page.locator("#identifierId")
-
-                    await email_input.wait_for(state="visible", timeout=20000)
-                    await email_input.fill(SF_User)
-
-                    next_btn = page.locator("#identifierNext")
-                    await next_btn.click()
-
-                except Exception as e:
-                    print(f"❌ Error in Google email step: {e}")
-                    await page.screenshot(path="error_google_email.png")
-                    return False
-
-                # =====================================================
-                # 🔥 VALIDACIÓN EMAIL INVÁLIDO (Try again)
-                # =====================================================
-                try:
-                    error_btn = page.locator("#next")
-
-                    await error_btn.wait_for(state="visible", timeout=3000)
-
-                    print("❌ Invalid email detected (Google Try again)")
-                    return False, "email invalido"
-
-                except:
-                    pass  # ✅ No apareció error → flujo normal
-                
-                
-                # =========================
-                # PASSWORD
-                # =========================
-                try:
-                    password_input = page.locator('input[name="Passwd"]')
-
-                    await password_input.wait_for(state="visible", timeout=20000)
-                    await password_input.fill(SF_Pass)
-
-                    next_btn = page.locator("#passwordNext")
-                    await next_btn.click()
-                    
-                    
-
-                except Exception as e:
-                    print(f"❌ Error in Google password step: {e}")
-                    await page.screenshot(path="error_google_password.png")
-                    return False
-
-                # =====================================================
-                # 🔥 VALIDACIÓN PASSWORD INVÁLIDO
-                # =====================================================
-                try:
-                    error_pass = page.locator('input[name="Passwd"][aria-invalid="true"]')
-
-                    await error_pass.wait_for(state="visible", timeout=3000)
-
-                    print("❌ Invalid password detected")
-                    return  False, "password invalido"
-
-                except:
-                    pass  # ✅ Password correcto → sigue flujo
-                
-                break
-
-            # =====================================================
-            # OKTA LOGIN (SE MANTIENE)
-            # =====================================================
-            if await okta_btn.count() > 0:
-
-                print("🔐 OKTA detected")
-
-                await okta_btn.wait_for(state="visible", timeout=15000)
-                await okta_btn.click(force=True)
-
-                await identifier_input.wait_for(timeout=15000)
-                await page.fill('input[name="identifier"]', SF_User)
-                await page.keyboard.press("Enter")
-
-                await page.locator(
-                    'input[name="credentials.passcode"]'
-                ).wait_for(timeout=15000)
-
-                await page.fill(
-                    'input[name="credentials.passcode"]',
-                    SF_Pass
-                )
-
-                await page.keyboard.press("Enter")
-                
-                break
-
-            # =====================================================
-            # DIRECT LOGIN (SE MANTIENE)
-            # =====================================================
-            if await identifier_input.count() > 0:
-
-                print("👤 Direct login detected")
-
-                await identifier_input.wait_for(timeout=15000)
-                await page.fill('input[name="identifier"]', SF_User)
-
-                await page.keyboard.press("Enter")
-
-                await page.locator(
-                    'input[name="credentials.passcode"]'
-                ).wait_for(timeout=15000)
-
-                await page.fill(
-                    'input[name="credentials.passcode"]',
-                    SF_Pass
-                )
-
-                await page.keyboard.press("Enter")
-
-                break
-
-            print("⏳ Interface not ready yet...")
-
-        else:
-
-            print("❌ Salesforce login interface not recognized")
-            await page.screenshot(path="error_login_salesforce.png")
-            return False
-
-        # =====================================================
-        # 2FA (SIN CAMBIOS)
-        # =====================================================
-        result = await authentication_flow(page)
-
-        if result == "accept":
-
-            selector = 'span.slds-truncate[title="Operations Service Console"]'
-
-            try:
-                # 1. Esperar que el iframe esté presente
-                await page.wait_for_selector("iframe.reportsReportBuilder", timeout=20000)
-
-                # 2. Acceder al frame
-                frame = page.frame_locator("iframe.reportsReportBuilder")
-
-                # 3. Localizar el botón "More Actions - Edit"
-                button = frame.locator("button.more-actions-button")
-
-                # 4. Esperar que el botón sea visible
-                await button.wait_for(state="visible", timeout=30000)
-
-                # (Opcional) pequeña espera para estabilidad
-                await asyncio.sleep(10)
-
-                print("✅ Salesforce interface loaded (More Actions detected)")
-                return True
-
-            except Exception as e:
-                print(f"❌ Salesforce interface not detected: {e}")
-                return False
-            
-
-        else:
-
-            return False
-
-    except Exception as e:
-
-        print(f"❌ Error in Salesforce login: {e}")
-        return False
-# ==========================================================
-# VALIDATE 2FA AUTHENTICATION
-# ==========================================================
-async def authentication_flow(page):
-
-    await asyncio.sleep(2)
-
-    possible_verify_selectors = [
-
-        'span[data-se="o-form-input-credentials.passcode"] input[name="credentials.passcode"]',
-        'input[name="credentials.passcode"][type="text"]',
-        'span.o-form-input-name-credentials\\.passcode input[type="text"]',
-
-    ]
-
-    cycles = 4
-
-    for cycle in range(cycles):
-
-        print(f"\n🔁 Authentication cycle {cycle + 1}/{cycles}")
-
-        for selector in possible_verify_selectors:
-
-            locator = page.locator(selector)
-
-            if await locator.is_visible():
-
-                print("✓ Verification field detected")
-
-                password_new_input = page.locator('input[name="credentials.passcode"]')
-                password_confirm_input = page.locator('input[name="confirmPassword"]')
-                password_form = page.locator("form.password-authenticator")
-
-                if (
-                    await password_form.count() > 0
-                    or (
-                        await password_new_input.count() > 0
-                        and await password_confirm_input.count() > 0
-                    )
-                ):
-
-                    print("⚠️ Password reset / expiration detected (Okta)")
-
-                    return False
-                
-                
-                result = show_notification()
-
-                await search_and_click_verify_button(page)
-
-                return result
-
-        print("⚠ Verification field not visible")
-
-        selector_factor = 'a[data-se="button"].button.select-factor.link-button'
-
-        try:
-
-            await page.wait_for_selector(
-                selector_factor,
-                state="visible",
-                timeout=1500
-            )
-
-            elements = await page.locator(selector_factor).all()
-
-            if len(elements) >= 2:
-
-                await elements[1].click()
-                return show_notification()
-
-            elif len(elements) == 1:
-
-                await elements[0].click()
-                return show_notification()
-
-        except:
-
-            print("No factor selection found")
-
-        await asyncio.sleep(1)
-
-    print("❌ Authentication flow failed")
-
-    return False
-
-# ==========================================================
-# SHOW 2FA POPUP
-# ==========================================================
-def show_notification():
-
-    try:
-
-        root = tk.Tk()
-        root.withdraw()
-
-        response = messagebox.askquestion(
-
-            "Notification Confirmation",
-
-            "Do you accept the notification?",
-
-            icon='question',
-
-            detail="Please accept the authentication notification on your phone and press YES.",
-
-            type='yesno'
-        )
-
-        if response == "yes":
-
-            print("✅ User accepted notification")
-            time.sleep(5)
-            return "accept"
-
-        else:
-
-            print("❌ User rejected notification")
-            return "reject"
-
-    except Exception as e:
-
-        print(f"❌ Notification error: {e}")
-        return "reject"
-
-# ==========================================================
-# CLICK VERIFY BUTTON
-# ==========================================================
-async def search_and_click_verify_button(page):
-
-    try:
-
-        verify_button = page.locator(
-            'input[type="submit"][value="Verificar"]'
-        )
-
-        await verify_button.wait_for(state="visible", timeout=1000)
-
-        if await verify_button.is_visible():
-
-            await verify_button.click()
-            return True
-
-    except:
-
-        pass
-
-    try:
-
-        verify_button = page.locator(
-            'input[type="submit"][value="Verify"]'
-        )
-
-        await verify_button.wait_for(state="visible", timeout=1000)
-
-        if await verify_button.is_visible():
-
-            await verify_button.click()
-            return True
-
-    except:
-
-        pass
-
-    print("Verify button not found")
-
-    return False
 
 # ==========================================================
 # TEST ADMIN CREDENTIALS
@@ -652,187 +210,8 @@ async def admin_login(page, username, password):
         raise Exception(f"Admin login failed: {e}")
         sys.exit(1)
           
-# Navegacion SF hacia la descarga, disparando la nueva ventana
-async def Navegacion_SF(page):
-
-    try:
-        print("🔹 [1] Esperando iframe...")
-        await page.wait_for_selector("iframe.reportsReportBuilder", timeout=20000)
-        frame = page.frame_locator("iframe.reportsReportBuilder")
-
-        print("🔹 [2] Click More Actions...")
-        button = frame.locator("button.more-actions-button")
-        await button.wait_for(state="visible", timeout=10000)
-        await button.click()
-
-        print("🔹 [3] Dropdown...")
-        dropdown = frame.locator("ul.dropdown__list[role='menu']")
-        await dropdown.wait_for(state="visible", timeout=10000)
-
-        print("🔹 [4] Click Export...")
-        await dropdown.get_by_role("menuitem", name="Export").click()
-
-        print("🔹 [5] Details Only...")
-        await page.wait_for_timeout(3000)
-        details_only = page.locator(
-            'span.slds-text-heading_small.visual-picker-header:has-text("Details Only")'
-        )
-        await details_only.wait_for(state="visible", timeout=10000)
-        await details_only.click()
-
-        print("🔹 [6] Formato XLSX...")
-        await page.select_option('select.slds-select', value='xlsx')
-
-        print("🔹 [7] Click Export final...")
-        boton = page.locator("button:has-text('Export')")
-
-        await boton.wait_for(state="visible", timeout=15000)
-        await boton.scroll_into_view_if_needed()
-
-        # 🔥 CLICK ROBUSTO (clave para Salesforce)
-        await boton.click(force=True)
-
-        print("🚀 Export ejecutado")
-
-    except Exception as e:
-        print(f"❌ Error during Navegacion_SF: {e}")
 
 
-
-#Funtion procces in SF an Download the report
-async def SF_Download_Report(SF_Pass, SF_User):
-
-    try:
-        from config import OUTPUT_FOLDER
-        from datetime import datetime
-        import os
-        from playwright.async_api import async_playwright
-
-        async with async_playwright() as playwright:
-
-            browser = None
-            page = None     
-
-            print("🔐 Iniciando login...")
-            response = await get_browser_and_page(
-                playwright, SF_Pass, SF_User, browser, page
-            )
-
-            # 🔥 Manejo flexible de respuesta
-            if len(response) == 4:
-                resultado, browser, page, message = response
-            else:
-                resultado, browser, page = response
-                message = None
-
-            
-            if resultado:
-
-                print("✅ Login OK")
-
-                # 🔥 CLAVE: esperar descarga (timeout largo)
-                async with page.expect_download(timeout=120000) as download_info:
-                    await Navegacion_SF(page)
-
-                download = await download_info.value
-
-                print("📥 Descarga detectada")
-
-                path = await download.path()
-                print(f"📁 Ruta temporal: {path}")
-
-                # ✅ Validación
-                if not path or os.path.getsize(path) == 0:
-                    raise Exception("❌ Archivo vacío o inválido")
-
-                # Nombre final
-                fecha = datetime.now().strftime("%d_%m_%Y")
-                ruta_archivo = OUTPUT_FOLDER / f"reporteSF-{fecha}.xlsx"
-
-                await download.save_as(str(ruta_archivo))
-
-                print(f"🟩 Guardado en: {ruta_archivo}")
-
-                return ruta_archivo
-
-            else:
-
-                print("🟥 Salesforce login failed")
-
-                if message:
-                    print(f"⚠️ Motivo: {message}")
-                    return message  # 🔥 DEVUELVES EL MOTIVO REAL
-
-                return None
-
-
-    except Exception as e:
-        print(f"❌ Error during SF_Download_Report: {e}")
-        return None
-
-
- 
-async def procesar_ACI(output_ACI_path, ProcessName, SF_Pass, SF_User):
-
-    """
-    Valida si el ACI existe.
-    Si no existe, descarga el reporte desde Salesforce.
-    Devuelve (True, mensaje) si todo fue bien, (False, mensaje) si hubo error.
-    """
-
-    ruta_reporte = None
-
-    # ==========================================================
-    # 1️⃣ VALIDAR SI YA EXISTE EL ACI
-    # ==========================================================
-
-    if os.path.exists(output_ACI_path):
-
-        mensaje = f"🆗 El ACI ya existe: {output_ACI_path}"
-        return True, mensaje
-
-
-    print("El ACI NO existe → se intentará descargar el reporte desde Salesforce")
-
-    # ==========================================================
-    # 2️⃣ INTENTAR DESCARGAR REPORTE
-    # ==========================================================
-
-    max_intentos = 3
-
-    for intento in range(1, max_intentos + 1):
-
-        try:
-
-            print(f"Intento {intento} de {max_intentos}...")
-
-            ruta_reporte = await SF_Download_Report(SF_Pass, SF_User)
-
-            if ruta_reporte:
-
-                print(f"Reporte descargado en: {ruta_reporte}")
-
-                return True, f"Reporte descargado correctamente: {ruta_reporte}"
-
-            else:
-
-                print("No se obtuvo ruta del reporte. Reintentando...")
-
-        except Exception as e:
-
-            print(f"Error en el intento {intento}: {e}")
-
-    # ==========================================================
-    # 3️⃣ SI FALLÓ TODO
-    # ==========================================================
-
-    mensaje = "❌ No se pudo descargar el reporte desde Salesforce."
-
-    return False, mensaje       
-        
-def normalizar_columnas(df):
-    df.columns = [normalizar(col) for col in df.columns]
-    return df
 
 def normalizar(texto: Optional[str]) -> str:
     if texto is None:
@@ -850,138 +229,6 @@ def normalizar(texto: Optional[str]) -> str:
     s = ''.join(ch for ch in s if unicodedata.category(ch) != 'Mn')
     return s
               
-async def get_case_dataframev1(case_number, sf_user, sf_pass):
-
-    """
-    Returns the DataFrame for the requested Case Number.
-    - If SQLite exists → load and return
-    - If not → download Salesforce report → extract case → create SQLite
-    """
-
-    try:
-
-        table_name = "aci_data"
-
-        # ==========================================================
-        # 1️⃣ SQLITE PATH
-        # ==========================================================
-
-        sqlite_path = config.OUTPUT_FOLDER / f"ACI_{case_number}.db"
-
-        # ==========================================================
-        # 2️⃣ LOAD EXISTING SQLITE
-        # ==========================================================
-
-        if os.path.exists(sqlite_path):
-
-            print(f"🆗 SQLite already exists: {sqlite_path}")
-
-            conn = sqlite3.connect(sqlite_path)
-
-            df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
-
-            # 🔎 verificar si existe la tabla de status
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT name
-                FROM sqlite_master
-                WHERE type='table'
-                AND name='aci_status'
-            """)
-
-            status_exists = cursor.fetchone()
-
-            if not status_exists:
-                print("🟡 Status table not found → creating")
-                create_status_table(conn, df)
-            else:
-                print("✅ Using existing status table")
-                # 🔄 Reset de procesos en 'processing' → 'pending'
-                cursor.execute("""
-                    UPDATE aci_status
-                    SET status = 'pending'
-                    WHERE status = 'processing'
-                """)
-
-                conn.commit()
-
-                print("🔄 Reset 'processing' → 'pending'")
-
-            conn.close()
-
-            return True, df, sqlite_path 
-        
-
-        print("SQLite does not exist → downloading Salesforce report")
-
-        # ==========================================================
-        # 3️⃣ DOWNLOAD REPORT
-        # ==========================================================
-
-        ruta_reporte = await SF_Download_Report(sf_pass, sf_user)
-
-        if not ruta_reporte:
-            print("❌ Salesforce report download failed")
-            return False, None, None
-
-        print(f"Report downloaded: {ruta_reporte}")
-
-        # ==========================================================
-        # 4️⃣ READ EXCEL
-        # ==========================================================
-
-        df = pd.read_excel(ruta_reporte)
-
-        if "Case Number" not in df.columns:
-            print("❌ 'Case Number' column not found in report")
-            return False, None, None
-
-        df["Case Number"] = df["Case Number"].astype(str)
-
-        case_number = str(case_number)
-
-        df_case = df[df["Case Number"] == case_number]
-
-        if df_case.empty:
-            print(f"❌ Case {case_number} not found in report")
-            return False, None, None
-
-        print(f"✅ Case {case_number} found in report")
-
-        # ==========================================================
-        # 6️⃣CREATE SQLITE
-        # ==========================================================
-
-        conn = sqlite3.connect(sqlite_path)
-
-        df_case.to_sql(
-            table_name,
-            conn,
-            if_exists="replace",
-            index=False
-        )
-        
-        # ==========================================================
-        # CREATE STATUS TABLE
-        # ==========================================================
-
-        create_status_table(conn, df_case)
-
-        conn.close()
-
-        print(f"🟩 SQLite created: {sqlite_path}")
-
-        # ==========================================================
-        # 7️⃣ RETURN DATAFRAME
-        # ==========================================================
-
-        return True, df_case, sqlite_path
-
-    except Exception as e:
-
-        print(f"❌ Error in get_case_dataframe: {e}")
-
-        return False, None, None      
 
 def build_sqlite_from_template(ruta_excel):
     import os
@@ -1060,34 +307,50 @@ def build_sqlite_from_template(ruta_excel):
         )
 
     def detect_merchant_country(merchant_row):
-        fields = [
-            merchant_row.get("Billing Address", ""),
-            merchant_row.get("Company address (Registry data)", ""),
-            merchant_row.get("Website", ""),
-            merchant_row.get("Company name (Registry data)", ""),
-        ]
 
-        text = strip_accents(
-            " | ".join([str(x) for x in fields if x is not None]).lower()
+        country = strip_accents(
+            str(
+                merchant_row.get("Country", "") or ""
+            ).strip().lower()
         )
 
-        if any(city in text for city in COLOMBIAN_CITIES) or ".com.co" in text or ".co/" in text:
+        if "colombia" in country:
             return "colombia"
 
-        if any(city in text for city in PERU_CITIES) or ".com.pe" in text or ".pe/" in text:
+        if "peru" in country:
             return "peru"
 
         return "unknown"
 
     def detect_crp_country(crp_row):
-        city = strip_accents(
-            str(crp_row.get("Company city (Registry data)", "") or "").strip().lower()
+
+        text = strip_accents(
+            str(
+                crp_row.get(
+                    "Company city (Registry data)",
+                    ""
+                ) or ""
+            ).strip().lower()
         )
 
-        if city in COLOMBIAN_CITIES:
+        # =========================================
+        # COUNTRY DIRECT DETECTION
+        # =========================================
+
+        if "colombia" in text:
             return "colombia"
 
-        if city in PERU_CITIES:
+        if "peru" in text:
+            return "peru"
+
+        # =========================================
+        # CITY DETECTION
+        # =========================================
+
+        if any(city in text for city in COLOMBIAN_CITIES):
+            return "colombia"
+
+        if any(city in text for city in PERU_CITIES):
             return "peru"
 
         return "unknown"
@@ -1135,26 +398,22 @@ def build_sqlite_from_template(ruta_excel):
                 expected["Google_SUNAT"] = "not applicable: merchant country could not be identified"
 
         # =========================
-        # PROCESOS COMERCIO
+        # MERCHANT GEMINI PROCESSES
         # =========================
-        m_name = normalize_missing(row.get("Company name (Registry data)"))
-        mn_status = "pending" if m_name != "missing data" else "missing data"
+        merchant_name = normalize_missing(row.get("Company name (Registry data)"))
+        merchant_name_status = "pending" if merchant_name != "missing data" else "missing data"
 
-        expected["Merchant_Name"]          = mn_status
-        expected["Merchant_Name_String"]   = mn_status
-        expected["Merchant_Name_AI"]       = mn_status
-        expected["Merchant_Name_String_AI"]= mn_status
+        expected["Merchant_Name"]        = merchant_name_status
+        expected["Merchant_Name_String"] = merchant_name_status
 
-        m_email = normalize_missing(row.get("Firm Email"))
-        me_status = "pending" if (m_email != "missing data" and "@" in str(m_email)) else "missing data"
+        merchant_email = normalize_missing(row.get("Firm Email"))
+        merchant_email_status = "pending" if (merchant_email != "missing data" and "@" in str(merchant_email)) else "missing data"
 
-        expected["Merchant_Email"]          = me_status
-        expected["Merchant_Email_String"]   = me_status
-        expected["Merchant_Email_AI"]       = me_status
-        expected["Merchant_Email_String_AI"]= me_status
+        expected["Merchant_Email"]        = merchant_email_status
+        expected["Merchant_Email_String"] = merchant_email_status
 
         # =========================
-        # CRP (4 procesos + Procuraduría)
+        # CRP GEMINI PROCESSES
         # =========================
         unique_crps = df_case.drop_duplicates(subset=["CRP number"])
 
@@ -1168,16 +427,14 @@ def build_sqlite_from_template(ruta_excel):
             if crp_number == "missing data" or crp_name == "missing data":
                 crp_base_status = "missing data"
 
-            expected[f"{crp_number}"]           = crp_base_status
-            expected[f"{crp_number}_String"]    = crp_base_status
-            expected[f"{crp_number}_AI"]        = crp_base_status
-            expected[f"{crp_number}_String_AI"] = crp_base_status
+            expected[f"{crp_number}"]        = crp_base_status
+            expected[f"{crp_number}_String"] = crp_base_status
 
-            proc_key = f"Google_PROCURADURIA_{crp_number}"
+            procuraduria_key = f"Google_PROCURADURIA_{crp_number}"
             if crp_country == "colombia":
-                expected[proc_key] = "missing data" if personal_id == "missing data" else "pending"
+                expected[procuraduria_key] = "missing data" if personal_id == "missing data" else "pending"
             else:
-                expected[proc_key] = "not applicable: CRP is not from Colombia"
+                expected[procuraduria_key] = "not applicable: CRP is not from Colombia"
 
         return expected
     
@@ -1283,6 +540,7 @@ def build_sqlite_from_template(ruta_excel):
         # NORMALIZACION MERCHANT
         # =========================
         merchant_required_fields = [
+            "Country",
             "MCC code: MCC",
             "MCC Description",
             "Tax Identification Number",
@@ -1299,6 +557,11 @@ def build_sqlite_from_template(ruta_excel):
             if col not in df_merch.columns:
                 df_merch[col] = None
 
+        
+        df_merch.loc[0, "Country"] = normalize_missing(
+            df_merch.loc[0, "Country"]
+        )
+        
         df_merch.loc[0, "MCC code: MCC"] = normalize_missing(df_merch.loc[0, "MCC code: MCC"])
         df_merch.loc[0, "MCC Description"] = normalize_missing(df_merch.loc[0, "MCC Description"])
         df_merch.loc[0, "Tax Identification Number"] = normalize_tax_id(df_merch.loc[0, "Tax Identification Number"])
@@ -1378,16 +641,12 @@ def build_sqlite_from_template(ruta_excel):
         print(f"❌ Error in build_sqlite_from_template: {e}")
         return False, str(e), None
 
-# ==========================================
-# CAPTCHA CUSTOM EXCEPTION
-# ==========================================
-class CaptchaExhaustedError(Exception):
-    """Se lanza cuando Google CAPTCHA agota todos los intentos internos."""
-    pass
+
 
 # ==========================================
 # MAIN PROCESS FUNCTION (UPDATED)
 # ==========================================
+
 async def evidence_collection_process(
     data_to_use,
     sqlite_path,
@@ -1399,7 +658,7 @@ async def evidence_collection_process(
 
     async with async_playwright() as playwright:
 
-        browser_admin = None
+        browser_admin  = None
         browser_google = None
 
         try:
@@ -1410,22 +669,20 @@ async def evidence_collection_process(
 
             print(f"🚀 Starting Evidence Collection - Partition {partition_number}")
 
-            page_admin = None
-            page_google = None
-            page_AI = None
-            browser_ai = None
+            page_admin   = None
+            page_google  = None
             admin_session_active = False
+
 
             row = data_to_use.iloc[0]
 
-            case_number = row["Case Number"]
-            business_name = row["Company name (Registry data)"]
-            tax_id = row["Tax Identification Number"]
-            email = row["Firm Email"]
-            website = row["Website"]
-            Personal_ID = row["Personal ID number"]
-            Billing_Address = data_to_use["Billing Address"].dropna().unique()[0]
-            
+            case_number     = row["Case Number"]
+            business_name   = row["Company name (Registry data)"]
+            tax_id          = row["Tax Identification Number"]
+            email           = row["Firm Email"]
+            website         = row["Website"]
+            billing_address = data_to_use["Billing Address"].dropna().unique()[0]
+
             crp_dict = build_crp_dictionary(data_to_use)
 
             print("\nCRP DICTIONARY SIZE:", len(crp_dict))
@@ -1451,7 +708,7 @@ async def evidence_collection_process(
                 # ==========================================
                 # ADMIN VALIDATIONS
                 # ==========================================
-                if process.startswith("ADM") and process_type in ("ALL","ADMIN"):
+                if process.startswith("ADM") and process_type in ("ALL", "ADMIN"):
 
                     if not admin_session_active:
 
@@ -1476,7 +733,6 @@ async def evidence_collection_process(
                             sqlite_path,
                             case_number
                         )
-
                         await capture_process_screenshot(
                             page_admin,
                             sqlite_path,
@@ -1487,90 +743,43 @@ async def evidence_collection_process(
                     await process_with_retries_async(sqlite_path, process, run_admin)
 
                 # ==========================================
-                # CRP GOOGLE SEARCH
-                # ==========================================
-                elif process.startswith("CRP") and process_type in ("ALL","CRP"):
-
-                    if not page_google:
-                        browser_google, page_google = await initialize_google_browser(playwright)
-
-                    print("CRP PROCESS ENTERED:", process)
-
-                    async def run_crp():
-                        nonlocal page_google, browser_google
-
-                        page_google, browser_google, search_ok = await google_search_process(
-                            process,
-                            crp_dict,
-                            page_google,
-                            browser_google,
-                            playwright
-                        )
-
-                        if not search_ok:
-                            # 🔥 No marcar completed, dejar en processing para reintento de ronda
-                            raise CaptchaExhaustedError(f"CAPTCHA exhausted for: {process}")
-
-                        await capture_process_screenshot(
-                            page_google,
-                            sqlite_path,
-                            case_number,
-                            process
-                        )
-                        
-                        
-                    await process_with_retries_async(sqlite_path, process, run_crp)
-
-                # ==========================================
-                # MERCHANT NAME / EMAIL GOOGLE SEARCH
+                # CRP / MERCHANT GEMINI SEARCH
                 # ==========================================
                 elif (
-                    process.startswith("Merchant_Name") or 
+                    process.startswith("CRP") or
+                    process.startswith("Merchant_Name") or
                     process.startswith("Merchant_Email")
-                ) and process_type in ("ALL", "CRP", "MERCHANT"):
-
-                    if not page_google:
-                        browser_google, page_google = await initialize_google_browser(playwright)
-
-                    print(f"🏪 MERCHANT PROCESS ENTERED: {process}")
-
-                    # Determinar qué valor buscar
-                    if process.startswith("Merchant_Name"):
-                        search_value = str(business_name).strip()
-                    else:
-                        search_value = str(email).strip()
-
-                    # Determinar si es búsqueda con string (keywords de riesgo)
-                    use_string = "_String" in process and not process.endswith("_AI")
-
-                    async def run_merchant():
-                        nonlocal page_google, browser_google
-
-                        page_google, browser_google, search_ok = await google_search_process(
-                            process,
-                            {process.split("_")[0] + "_" + process.split("_")[1]: search_value},
-                            page_google,
-                            browser_google,
-                            playwright
-                        )
-
-                        if not search_ok:
-                            raise CaptchaExhaustedError(f"CAPTCHA exhausted for: {process}")
-
-                        await capture_process_screenshot(
-                            page_google,
-                            sqlite_path,
-                            case_number,
-                            process
-                        )
-                    
-                    
-                    await process_with_retries_async(sqlite_path, process, run_merchant)
+                ) and process_type in ("ALL", "CRP", "MERCHANT", "GEMINI"):
                 
+                    print(f"🔍 [GEMINI] First Gemini process detected: {process}")
+                    print("🌐 Launching dual tab Gemini session...")
+                
+                    # Put the current process back to pending so the tab workers pick it up
+                    update_process_status(sqlite_path, process, "pending")
+                
+                    # Run both tabs in parallel — they will consume all pending
+                    # CRP/Merchant processes from SQLite until none are left
+                    await run_gemini_dual_tab_session(
+                        playwright           = playwright,
+                        sqlite_path          = sqlite_path,
+                        prompt_general_path  = config.PROMPT_GENERAL_PATH,
+                        prompt_specific_path = config.PROMPT_SPECIFIC_PATH,
+                        crp_dict             = crp_dict,
+                        business_name        = business_name,
+                        email                = email
+                    )
+                    
+                    print("🔥 GEMINI SESSION COMPLETED")
+                    print("✅ Gemini dual tab session completed")
+                
+                    # After session ends, break the while loop for this worker
+                    # since all Gemini processes have been handled
+                    break
+
                 # ==========================================
                 # GOOGLE URL
                 # ==========================================
-                elif process == "Google_URL" and process_type in ("ALL","GOOGLE"):
+                elif process == "Google_URL" and process_type in ("ALL", "GOOGLE"):
 
                     print("🌐 Processing Google URL")
 
@@ -1589,9 +798,9 @@ async def evidence_collection_process(
                     await process_with_retries_async(sqlite_path, process, run_url)
 
                 # ==========================================
-                # PROCURADURIA (UPDATED - DYNAMIC) (COLOMBIA ONLY)
+                # PROCURADURIA (COLOMBIA ONLY)
                 # ==========================================
-                elif process.startswith("Google_PROCURADURIA_") and process_type in ("ALL","PROCURADURIA"):
+                elif process.startswith("Google_PROCURADURIA_") and process_type in ("ALL", "PROCURADURIA"):
 
                     print("⚖ Procuraduria validation")
 
@@ -1599,23 +808,15 @@ async def evidence_collection_process(
                         browser_google, page_google = await initialize_google_browser(playwright)
 
                     async def run_proc():
-
-                        # Extract CRP from process name
                         crp = process.replace("Google_PROCURADURIA_", "").strip()
-
-                        # Find matching row
                         row_match = data_to_use[
                             data_to_use["CRP number"].astype(str).str.strip() == crp
                         ]
-
                         if row_match.empty:
                             print(f"⚠ No row found for CRP: {crp}")
                             return
-
                         personal_id = row_match.iloc[0]["Personal ID number"]
-
                         print(f"📄 CRP: {crp} → Personal ID: {personal_id}")
-
                         await Busqueda_procuraduria(
                             personal_id,
                             page_google,
@@ -1629,7 +830,7 @@ async def evidence_collection_process(
                 # ==========================================
                 # RUES SEARCH (COLOMBIA ONLY)
                 # ==========================================
-                elif process == "Google_RUES" and process_type in ("ALL","GOOGLE"):
+                elif process == "Google_RUES" and process_type in ("ALL", "GOOGLE"):
 
                     print("🏛 Processing RUES search")
 
@@ -1637,7 +838,6 @@ async def evidence_collection_process(
                         browser_google, page_google = await initialize_google_browser(playwright)
 
                     async def run_rues():
-
                         await search_RUES(
                             tax_id,
                             page_google,
@@ -1647,11 +847,11 @@ async def evidence_collection_process(
                         )
 
                     await process_with_retries_async(sqlite_path, process, run_rues)
-                
+
                 # ==========================================
                 # SUNAT SEARCH (PERU ONLY)
                 # ==========================================
-                elif process == "Google_SUNAT" and process_type in ("ALL","GOOGLE"):
+                elif process == "Google_SUNAT" and process_type in ("ALL", "GOOGLE"):
 
                     print("🇵🇪 Processing SUNAT search")
 
@@ -1659,7 +859,6 @@ async def evidence_collection_process(
                         browser_google, page_google = await initialize_google_browser(playwright)
 
                     async def run_sunat():
-
                         await search_SUNAT(
                             tax_id,
                             page_google,
@@ -1669,11 +868,11 @@ async def evidence_collection_process(
                         )
 
                     await process_with_retries_async(sqlite_path, process, run_sunat)
-                
+
                 # ==========================================
                 # GOOGLE MAPS
                 # ==========================================
-                elif process == "Google_MAPS" and process_type in ("ALL","GOOGLE"):
+                elif process == "Google_MAPS" and process_type in ("ALL", "GOOGLE"):
 
                     print("🗺 Processing Google Maps")
 
@@ -1681,9 +880,8 @@ async def evidence_collection_process(
                         browser_google, page_google = await initialize_google_browser(playwright)
 
                     async def run_maps():
-
                         await Busqueda_google_maps(
-                            Billing_Address,   # o lo que quieras buscar
+                            billing_address,
                             page_google,
                             sqlite_path,
                             case_number,
@@ -1691,118 +889,6 @@ async def evidence_collection_process(
                         )
 
                     await process_with_retries_async(sqlite_path, process, run_maps)
-
-                # ==========================================
-                # AI PROCESS
-                # ==========================================
-                elif process.endswith("_AI") and process_type in ("ALL", "AI"):
-
-                    print(f"🤖 [AI WORKER {partition_number}] ejecutando: {process}")
-
-                    # 🔥 inicializar browser UNA VEZ
-                    if not page_AI:
-                        browser_ai, page_AI = await initialize_ai_browser(playwright)
-
-                        # 🔐 login con reintentos
-                        MAX_LOGIN_RETRIES = 3
-                        login_ok = False
-
-                        for login_attempt in range(1, MAX_LOGIN_RETRIES + 1):
-                            print(f"🔐 Login attempt {login_attempt}/{MAX_LOGIN_RETRIES}...")
-                            login_ok = await login_abacus_ai(
-                                page_AI,
-                                email="hurtadogarzon@gmail.com",
-                                password="Letsgo12**"
-                            )
-                            if login_ok:
-                                break
-                            print(f"⚠ Login failed on attempt {login_attempt}, retrying...")
-                            await asyncio.sleep(5)
-                            try:
-                                await browser_ai.close()
-                            except:
-                                pass
-                            browser_ai, page_AI = await initialize_ai_browser(playwright)
-
-                        if not login_ok:
-                            print("🚨 Login failed after all retries → worker exits gracefully")
-                            # 🔥 NO hacer return → dejar que el while continúe con el siguiente proceso
-                            continue
-
-                    async def run_ai():
-
-                        nonlocal browser_ai, page_AI  # 🔥 IMPORTANTE para poder reasignar
-
-                        MAX_AI_RETRIES = 3
-
-                        for intento in range(1, MAX_AI_RETRIES + 1):
-
-                            try:
-                                print(f"\n🤖 AI attempt {intento} for: {process}")
-
-                                # 🚀 USAR SIEMPRE EL MISMO PAGE (NO CREAR NUEVO)
-                                result = await run_ai_worker(
-                                    page_AI,
-                                    process,
-                                    sqlite_path,
-                                    case_number,
-                                    config.OUTPUT_FOLDER,
-                                    config.PROMPT_PATH
-                                )
-
-                                # 🔥 VALIDAR RESULTADO
-                                if result:
-                                    print(f"✅ AI succeeded on attempt {intento}")
-                                    return
-
-                                else:
-                                    print(f"⚠ AI failed on attempt {intento}")
-                                    raise Exception("AI returned False")
-
-                            except Exception as e:
-                                print(f"❌ AI crash on attempt {intento}: {e}")
-
-                                # 🚨 REINICIAR SOLO SI FALLA
-                                try:
-                                    if browser_ai:
-                                        print("💥 Closing broken browser...")
-                                        await browser_ai.close()
-                                except:
-                                    pass
-
-                                print("🚀 Recreating browser after failure...")
-                                browser_ai, page_AI = await initialize_ai_browser(playwright)
-
-                                print("🔐 Re-login after failure...")
-                                login_ok = await login_abacus_ai(
-                                    page_AI,
-                                    email="hurtadogarzon@gmail.com",
-                                    password="Letsgo12**"
-                                )
-
-                                if not login_ok:
-                                    print("🚨 Login failed after crash → siguiente intento")
-                                    continue
-
-                            # 🔁 retry delay
-                            if intento < MAX_AI_RETRIES:
-                                print("🔁 Retrying AI...")
-                                await asyncio.sleep(3)
-
-                        # 🚨 si falla todo
-                        print(f"🚨 AI FAILED AFTER {MAX_AI_RETRIES} ATTEMPTS: {process}")
-                    
-                    await process_with_retries_async(
-                        sqlite_path,
-                        process,
-                        run_ai
-                    )
-
-
-
-
-
-
 
         except Exception as e:
             print(f"❌ Critical error: {e}")
@@ -1815,8 +901,8 @@ async def evidence_collection_process(
             if browser_google:
                 await browser_google.close()
 
-            if browser_ai:
-                await browser_ai.close()
+            
+
 
 async def search_merchant(
     page,
@@ -1877,106 +963,10 @@ async def search_merchant(
 
         return False
 
-async def capture_process_screenshotv1(page,sqlite_path,case_number,process,custom_name=None):
-
-    screenshots_dir = Path(sqlite_path).parent / "screenshots"
-    screenshots_dir.mkdir(exist_ok=True)
-
-    await page.wait_for_timeout(800)
-
-    # 🔥 usar nombre personalizado si existe
-    process_name = custom_name if custom_name else process
-
-    # =====================================================
-    # 🔥 RUES GENERAL / ECONOMIC + PROCURADURIA → SINGLE SCREENSHOT
-    # =====================================================
-    if (
-        "GENERAL" in process_name
-        or "ECONOMIC" in process_name
-        or process_name.startswith("Google_PROCURADURIA_")
-    ):
-
-        file_path = screenshots_dir / f"{case_number}_{process_name}.png"
-
-        # 👉 Scroll down a bit to avoid header / search box
-        scroll_offset = random.randint(200, 400)
-
-        await page.evaluate(f"window.scrollTo(0, {scroll_offset})")
-        await page.wait_for_timeout(600)
-
-        await page.screenshot(
-            path=str(file_path),
-            full_page=False,
-            animations="disabled",
-            scale="device"
-        )
-
-        print(f"📸 SINGLE screenshot saved: {file_path}")
-        return
-        
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    # =====================================================
-    # 🔥 ADMIN → UNA SOLA IMAGEN (FULL PAGE)
-    # =====================================================
-    if process_name.startswith("ADM"):
-
-        file_path = screenshots_dir / f"{case_number}_{process_name}.png"
-
-        await page.evaluate("window.scrollTo(0,0)")
-        await page.wait_for_timeout(500)
-
-        await page.screenshot(
-            path=str(file_path),
-            full_page=True,
-            animations="disabled",
-            scale="device"
-        )
-
-        print(f"📸 ADMIN screenshot saved: {file_path}")
-        return
-
-    # =====================================================
-    # 🔥 RESTO → SCROLL + PARTES
-    # =====================================================
-    await page.evaluate("window.scrollTo(0,0)")
-    await page.wait_for_timeout(500)
-
-    viewport_height = await page.evaluate("window.innerHeight")
-    total_height = await page.evaluate("document.body.scrollHeight")
-
-    scroll_y = 0
-    part = 0
-
-    while scroll_y < total_height:
-
-        file_path = screenshots_dir / f"{case_number}_{process_name}_part_{part}.png"
-
-        await page.evaluate(f"window.scrollTo(0, {scroll_y})")
-        await page.wait_for_timeout(400)
-
-        await page.screenshot(
-            path=str(file_path),
-            full_page=False,
-            animations="disabled",
-            scale="device"
-        )
-
-        print(f"📸 Screenshot saved: {file_path}")
-
-        scroll_y += viewport_height
-        part += 1
 
 async def capture_process_screenshot(page, sqlite_path, case_number, process, custom_name=None):
-    screenshots_dir = Path(sqlite_path).parent / "screenshots"
-    screenshots_dir.mkdir(exist_ok=True)
+    screenshots_dir = Path(sqlite_path).parent / "screenshots" / str(case_number)
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
 
     process_name = custom_name if custom_name else process
 
@@ -1985,7 +975,7 @@ async def capture_process_screenshot(page, sqlite_path, case_number, process, cu
         "Merchant_Name",
         "Merchant_Email",
         "Google_URL",
-        "CRP",
+        "Google_RUES_LEGAL",
         "LEGAL"
     ]
 
@@ -1995,7 +985,7 @@ async def capture_process_screenshot(page, sqlite_path, case_number, process, cu
     # 📸 MODO SINGLE (ADMIN, MAPS, URL, ETC)
     # =====================================================
     if not needs_scroll:
-        file_path = screenshots_dir / f"{case_number}_{process_name}_part_0.png"
+        file_path = screenshots_dir / f"{process_name}_part_0.png"
 
         # Ajuste de espera antes de la captura para que cargue la interfaz
         await page.wait_for_timeout(1000)
@@ -2024,7 +1014,7 @@ async def capture_process_screenshot(page, sqlite_path, case_number, process, cu
     max_parts = 6 # Límite para no crear PDFs infinitos
 
     while scroll_y < total_height and part < max_parts:
-        file_path = screenshots_dir / f"{case_number}_{process_name}_part_{part}.png"
+        file_path = screenshots_dir / f"{process_name}_part_{part}.png"
 
         await page.evaluate(f"window.scrollTo(0, {scroll_y})")
         await page.wait_for_timeout(800)
@@ -2107,8 +1097,8 @@ def create_status_table(conn, df_case):
         if name == "missing data" or crp_id == "missing data":
             name_status = "missing data"
         
+        cursor.execute("INSERT INTO aci_status VALUES (?, ?)", (f"{crp_id}", name_status))
         cursor.execute("INSERT INTO aci_status VALUES (?, ?)", (f"{crp_id}_String", name_status))
-        cursor.execute("INSERT INTO aci_status VALUES (?, ?)", (f"{crp_id}_AI", name_status))
 
     conn.commit()
   
@@ -2141,29 +1131,6 @@ def reset_processing_to_pending(sqlite_path, prefixes=None):
             query = "UPDATE aci_status SET status = 'pending' WHERE status = 'processing'"
         
         cursor.execute(query)
-        affected = cursor.rowcount
-        conn.commit()
-        print(f"🔄 Reset {affected} processes: processing → pending")
-        return affected
-    except Exception as e:
-        print(f"❌ Error resetting processing to pending: {e}")
-        return 0
-    finally:
-        conn.close()
-# ==========================================
-# RESET processing → pending (para rondas de reintento)
-# ==========================================
-def reset_processing_to_pendingv1(sqlite_path):
-    """
-    Busca todos los procesos en estado 'processing' y los regresa a 'pending'.
-    Se llama al final de cada ronda antes de reintentar.
-    """
-    conn = sqlite3.connect(sqlite_path, timeout=30)
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "UPDATE aci_status SET status = 'pending' WHERE status = 'processing'"
-        )
         affected = cursor.rowcount
         conn.commit()
         print(f"🔄 Reset {affected} processes: processing → pending")
@@ -2217,86 +1184,9 @@ def mark_remaining_processing_as_issue(sqlite_path):
         conn.close()
 
 
-def mark_process_completed(sqlite_path, process):
-
-    conn = sqlite3.connect(sqlite_path)
-
-    conn.execute(
-        """
-        UPDATE aci_status
-        SET status='completed'
-        WHERE process=?
-        """,
-        (process,)
-    )
     
-    # =====================================================
-    # 🔥 ACTIVATE AI PROCESS (CRP ONLY)
-    # =====================================================
-
-    if process.startswith("CRP") and not process.endswith("_AI"):
-
-        print(f"🧠 Activando AI para: {process}")
-        if process.endswith("_String"):
-            ai_process = f"{process}_AI"   # CRP-XXXX_String → CRP-XXXX_String_AI
-        else:
-            ai_process = f"{process}_AI"   # CRP-XXXX → CRP-XXXX_AI
-
-        # 🔒 Solo activar si está en waiting (evita duplicados)
-        conn.execute("""
-            UPDATE aci_status
-            SET status='pending'
-            WHERE process=? AND status='waiting'
-        """, (ai_process,))
-
-        if conn.total_changes > 0:
-            print(f"🚀 AI ACTIVADO → {ai_process}")
-        else:
-            print(f"⚠️ AI NO ACTIVADO (ya estaba activo o no estaba en waiting): {ai_process}")
-
-    conn.commit()
-    conn.close()
-    
-async def google_news_search(page, query_text):
-
-    
-
-    try:
-
-        query = urllib.parse.quote(query_text)
-
-        url = f"https://www.google.com/search?q={query}&tbm=nws&hl=en"
-
-        await page.goto(
-            url,
-            timeout=15000,
-            wait_until="domcontentloaded"
-        )
-
-        await page.wait_for_timeout(2000)
-
-        print(f"📰 Google News search: {query_text}")
-
-        return True
-
-    except Exception as e:
-
-        print(f"⚠️ Google News error: {e}")
-
-        return False
-    
-def build_risk_query(name):
-
-    keywords = """
-    (LAVADO | NARCOTRAFICO | FRAUDE | CRIMEN | ACUSADO | ARRESTO |
-    CORRUPCION | SOBORNO | TERRORISTA | TERRORISMO | DROGA | PANDILLA |
-    TRAFICO | ARMA | VIOLACION | PORNOGRAFIA | ABUSO | SEXUAL |
-    CARTEL | ESTAFA | BLANQUEO | EVASION | SECUESTRO | TESTAFERRO |
-    REGIMEN | NARCO | PARAMILITAR | VIOLENCIA | ARMADO)
-    """
-
-    return f'"{name}" AND {keywords}'
-        
+   
+       
 def get_next_process(sqlite_path, process_type="ALL"):
 
     conn = sqlite3.connect(sqlite_path, timeout=30)
@@ -2308,10 +1198,9 @@ def get_next_process(sqlite_path, process_type="ALL"):
 
     try:
 
-        # 🔒 lock fuerte → evita doble toma en multi-worker
         conn.execute("BEGIN IMMEDIATE")
-        
-        print("📊 Estado actual pending:")
+
+        print("📊 Current pending status:")
         cursor.execute("SELECT process FROM aci_status WHERE status='pending'")
         rows_debug = cursor.fetchall()
         print("➡ Pending:", [r[0] for r in rows_debug][:10])
@@ -2321,18 +1210,10 @@ def get_next_process(sqlite_path, process_type="ALL"):
 
         elif process_type == "CRP":
             filter_clause = """(
-                (process LIKE 'CRP%' AND process NOT LIKE '%_AI')
-                OR
-                (process LIKE 'Merchant_%' AND process NOT LIKE '%_AI')
+                process LIKE 'CRP%'
+                OR process LIKE 'Merchant_Name%'
+                OR process LIKE 'Merchant_Email%'
             )"""
-
-        elif process_type == "MERCHANT":
-            filter_clause = """(
-                process LIKE 'Merchant_%' AND process NOT LIKE '%_AI'
-            )"""
-
-        elif process_type == "AI":
-            filter_clause = "process LIKE '%_AI'"
 
         elif process_type == "GOOGLE":
             filter_clause = """process IN (
@@ -2350,8 +1231,8 @@ def get_next_process(sqlite_path, process_type="ALL"):
             FROM aci_status
             WHERE status='pending'
             AND {filter_clause}
-            ORDER BY 
-                CASE 
+            ORDER BY
+                CASE
                     WHEN process LIKE 'ADM%' THEN 1
                     WHEN process LIKE 'CRP%' THEN 2
                     WHEN process = 'Google_URL' THEN 3
@@ -2364,20 +1245,20 @@ def get_next_process(sqlite_path, process_type="ALL"):
             LIMIT 1
         """
 
-        print(f"🔍 DEBUG query SQL a ejecutar: {query}")
+        print(f"🔍 DEBUG SQL query: {query}")
         cursor.execute(query)
         row = cursor.fetchone()
 
         print("SQL RESULT:", row)
 
         if row is None:
-            print("⚠️ No hay procesos disponibles para este worker")
+            print("⚠️ No processes available for this worker")
             conn.commit()
             conn.close()
             return None
 
         process = row[0]
-        print(f"🎯 PROCESO SELECCIONADO: {process}")
+        print(f"🎯 SELECTED PROCESS: {process}")
 
         cursor.execute("""
             UPDATE aci_status
@@ -2386,156 +1267,19 @@ def get_next_process(sqlite_path, process_type="ALL"):
         """, (process,))
 
         conn.commit()
-
-        print("PROCESS LOCKED:", process)
-
         conn.close()
 
-        print(f"🎯 PROCESO SELECCIONADO: {process}")
+        print(f"🎯 PROCESS LOCKED: {process}")
         return process
 
     except Exception as e:
 
         print("❌ get_next_process error:", e)
-
         conn.rollback()
         conn.close()
-
         return None
 
-async def google_search(page, query_text):
 
-    try:
-
-        query = urllib.parse.quote(query_text)
-
-        url = f"https://www.google.com/search?q={query}&hl=en"
-
-        await page.goto(
-            url,
-            timeout=15000,
-            wait_until="domcontentloaded"
-        )
-
-        await page.wait_for_timeout(2000)
-
-        print(f"🔎 Google search: {query_text}")
-
-        return True
-
-    except Exception as e:
-
-        print(f"⚠️ Google search error: {e}")
-
-        return False
-
-import urllib.parse
-
-async def es_captcha(page_google):
-    """Verifica si la página actual tiene CAPTCHA."""
-    if await page_google.locator("#recaptcha").count() > 0:
-        return True
-    if await page_google.locator("#recaptcha-anchor-label").count() > 0:
-        return True
-    if await page_google.locator("iframe[title='reCAPTCHA']").count() > 0:
-        return True
-    if "/sorry/" in page_google.url:
-        return True
-    return False
-
-async def reiniciar_browser_google(playwright):
-    """Cierra y reinicia el browser de Google limpio."""
-    browser_google = await playwright.chromium.launch(
-        headless=False,
-        args=["--disable-blink-features=AutomationControlled"]
-    )
-
-    context_google = await browser_google.new_context(
-        viewport={"width": 1366, "height": 768},
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-        locale="en-US"
-    )
-
-    await context_google.add_init_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-    )
-
-    page_google = await context_google.new_page()
-
-    await page_google.goto(
-        "https://www.google.com",
-        timeout=15000,
-        wait_until="domcontentloaded"
-    )
-
-    print("✅ Google browser restarted")
-
-    return page_google, browser_google
-
-async def manejar_captcha_google(playwright, page_google, browser_google, query=None):
-
-    try:
-        
-        # ESPERA ALEATORIA HUMANA (4 a 9 seg) para que la página cargue y simular lectura
-        espera_inicial = random.uniform(4.0, 9.0)
-        print(f"⏳ Waiting {espera_inicial:.2f}s before checking for search bar...")
-        await page_google.wait_for_timeout(int(espera_inicial * 1000))
-        
-        # PANTALLAZO 1: ¿Existe textarea[name="q"]?
-        textarea = page_google.locator('textarea[name="q"]')
-        if await textarea.count() > 0:
-            print("⌨️ Input textarea found, searching there...")
-            await textarea.fill(query)
-            await page_google.keyboard.press("Enter")
-            await page_google.wait_for_timeout(3000)
-        else:
-            print("🌐 Textarea not found, using direct URL bypass...")
-            url_directa = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
-            await page_google.goto(url_directa, timeout=15000, wait_until="domcontentloaded")
-            await page_google.wait_for_timeout(3000)
-
-        # ¿Existe CAPTCHA después de este intento?
-        if not await es_captcha(page_google):
-            print("✅ Bypassed CAPTCHA successfully")
-            return page_google, browser_google, False
-
-        # PANTALLAZO 2: Intentar bypass por URL directa si falló el textarea
-        print("⚠️ CAPTCHA detected after search, trying direct URL...")
-        url_directa = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
-        await page_google.goto(url_directa, timeout=15000, wait_until="domcontentloaded")
-        await page_google.wait_for_timeout(3000)
-
-        # ¿Sigue el CAPTCHA?
-        if not await es_captcha(page_google):
-            print("✅ Bypassed CAPTCHA after URL direct")
-            return page_google, browser_google, False
-
-        # PANTALLAZO 3: Cierre y reinicio (último recurso)
-        print("⚠️ CAPTCHA persists after all attempts → closing browser")
-        espera = random.randint(30, 60) + random.uniform(0.5, 3.5)
-        print(f"🛑 Waiting {espera:.2f} seconds...")
-        await browser_google.close()
-        await asyncio.sleep(espera)
-        print("🔄 Restarting Google browser...")
-        page_google, browser_google = await reiniciar_browser_google(playwright)
-        
-        return page_google, browser_google, True
-
-    except Exception as e:
-        print(f"⚠️ CAPTCHA handler error: {e}")
-        return page_google, browser_google, False
-
-
-async def handle_google_captcha(playwright, page_google, browser_google, query=None):
-
-    page_google, browser_google, captcha = await manejar_captcha_google(
-        playwright,
-        page_google,
-        browser_google,
-        query=query
-    )
-
-    return page_google, browser_google, captcha
 
     
 PROCESS_NAMES = {
@@ -2552,7 +1296,11 @@ PROCESS_NAMES = {
     "Google_MAPS": "Google Maps Search"
 }
 
-def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None, ruta_imagen=None):
+
+def generar_reporte_pdf(case_number,sqlite_path,admin_user, case_summary=None,underwriting_link=None,ruta_imagen=None):
+
+    print("🔥 STARTING PDF GENERATION")
+    print(f"📄 Case Number: {case_number}")
 
     BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(__file__))
     ruta_regular = os.path.join(BASE_DIR, "fonts", "AmpleSoftPro.ttf")
@@ -2568,14 +1316,14 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
         pdfmetrics.registerFont(TTFont("AmpleSoft", ruta_regular))
         pdfmetrics.registerFont(TTFont("AmpleSoft-Bold", ruta_bold))
 
-        FUENTE_BASE = "AmpleSoft"
-        FUENTE_BOLD = "AmpleSoft-Bold"
+        FUENTE_BASE   = "AmpleSoft"
+        FUENTE_BOLD   = "AmpleSoft-Bold"
         FUENTE_ITALIC = "AmpleSoft"
     except Exception as e:
         print("⚠ No se pudo cargar AmpleSoft, usando Helvetica")
         print("❌ ERROR REAL:", e)
-        FUENTE_BASE = "Helvetica"
-        FUENTE_BOLD = "Helvetica-Bold"
+        FUENTE_BASE   = "Helvetica"
+        FUENTE_BOLD   = "Helvetica-Bold"
         FUENTE_ITALIC = "Helvetica-Oblique"
 
     def P(texto, bold=False, color="black", size=11):
@@ -2585,21 +1333,21 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
             styles["Normal"]
         )
 
-    screenshots_dir = Path(sqlite_path).parent / "screenshots"
-    output_pdf = Path(sqlite_path).parent / f"CASE_{case_number}_evidence.pdf"
+    screenshots_dir = Path(sqlite_path).parent / "screenshots" / str(case_number)
+    output_pdf      = Path(sqlite_path).parent / f"CASE_{case_number}_evidence.pdf"
 
     styles = getSampleStyleSheet()
 
-    styles["Normal"].fontName = FUENTE_BASE
-    styles["Normal"].fontSize = 11
+    styles["Normal"].fontName  = FUENTE_BASE
+    styles["Normal"].fontSize  = 11
     styles["Normal"].alignment = TA_JUSTIFY
 
-    styles["Title"].fontName = FUENTE_BOLD
-    styles["Title"].fontSize = 12
-    styles["Title"].alignment = TA_LEFT
+    styles["Title"].fontName   = FUENTE_BOLD
+    styles["Title"].fontSize   = 12
+    styles["Title"].alignment  = TA_LEFT
 
-    styles["Heading2"].fontName = FUENTE_BOLD
-    styles["Heading2"].fontSize = 12
+    styles["Heading2"].fontName  = FUENTE_BOLD
+    styles["Heading2"].fontSize  = 12
     styles["Heading2"].alignment = TA_LEFT
 
     elementos = []
@@ -2623,8 +1371,18 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
         spaceAfter=6,
     )
 
+    link_style = ParagraphStyle(
+        name="LinkStyle",
+        parent=styles["Normal"],
+        fontName=FUENTE_BASE,
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#777777"),
+        spaceAfter=4,
+    )
+
     # =====================================================
-    # 🔥 HEADER + FOOTER
+    # HEADER + FOOTER
     # =====================================================
     def draw_header(canvas, doc):
 
@@ -2641,7 +1399,7 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
         text_width = canvas.stringWidth(texto, FUENTE_BOLD, 10)
         canvas.drawString((width - text_width) / 2, height - header_height + 10, texto)
 
-        BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(__file__))
+        BASE_DIR  = getattr(sys, "_MEIPASS", os.path.dirname(__file__))
         logo_path = os.path.join(BASE_DIR, "static", "LogoRapyd.png")
 
         try:
@@ -2670,7 +1428,7 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
         canvas.line(40, footer_y + h + 18, 550, footer_y + h + 18)
 
     # =====================================================
-    # 🔥 SQLITE DATA
+    # SQLITE DATA
     # =====================================================
     conn = sqlite3.connect(sqlite_path)
     conn.row_factory = sqlite3.Row
@@ -2680,15 +1438,14 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
     row = cursor.fetchone()
 
     company_name = row["Company name (Registry data)"] if row else "N/A"
-    mcc_code = row["MCC code: MCC"] if row else ""
-    mcc_desc = row["MCC Description"] if row else ""
-
-    mcc_text = f"{int(mcc_code)} - {mcc_desc}" if mcc_code else "N/A"
+    mcc_code     = row["MCC code: MCC"] if row else ""
+    mcc_desc     = row["MCC Description"] if row else ""
+    mcc_text     = f"{int(mcc_code)} - {mcc_desc}" if mcc_code else "N/A"
 
     conn.close()
 
     # =====================================================
-    # 🔥 HEADER TABLE
+    # HEADER TABLE
     # =====================================================
     fecha_actual = datetime.now().strftime("%B %d, %Y")
 
@@ -2746,13 +1503,13 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
     elementos.append(Spacer(1, 20))
 
     # =====================================================
-    # 🔥 TITLE
+    # TITLE
     # =====================================================
     elementos.append(Paragraph(f"Case Evidence Report: {case_number}", styles["Title"]))
     elementos.append(Spacer(1, 20))
 
     # =====================================================
-    # 🔥 CHECKLIST STATUS TABLE (GROUPED) ← MOVIDO AL INICIO
+    # CHECKLIST STATUS TABLE (GROUPED)
     # =====================================================
     try:
         conn = sqlite3.connect(sqlite_path)
@@ -2770,7 +1527,6 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
             for r in rows:
                 process_name = str(r[0])
                 status_value = str(r[1]) if r[1] else ""
-
                 p = process_name.upper()
 
                 if p.startswith("ADM"):
@@ -2797,14 +1553,13 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
                 group_block.append(Paragraph(group_name, titulo_style))
                 group_block.append(Spacer(1, 6))
 
-                # ✅ NUEVA TERCERA COLUMNA: Remediation or justification
                 data = [["Process", "Status", "Remediation or justification"]]
 
                 for process_name, status_value in sorted(grouped[group_name]):
                     data.append([
                         Paragraph(process_name, styles["Normal"]),
                         Paragraph(status_value, styles["Normal"]),
-                        Paragraph("", styles["Normal"]),  # columna vacía
+                        Paragraph("", styles["Normal"]),
                     ])
 
                 table = Table(data, colWidths=[170, 130, 200])
@@ -2830,12 +1585,11 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
         print(f"⚠ Error loading checklist status: {e}")
 
     # =====================================================
-    # 🔥 BUSINESS MODEL
+    # BUSINESS MODEL
     # =====================================================
-    if case_summary:
-        case_summary = case_summary.strip()
 
-    if case_summary:
+    if case_summary or underwriting_link:
+
         elementos.append(Paragraph("Business Model", titulo_style))
         elementos.append(Spacer(1, 10))
 
@@ -2844,21 +1598,49 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
             nota_style
         ))
 
-        #elementos.append(Spacer(1, 6))
-
-        #elementos.append(Paragraph(
-        #    "Admin whitelist validation (search in Admin using name, identification number, website, and email).",
-        #    nota_style
-        #))
-
         elementos.append(Spacer(1, 10))
 
-        clean_summary = case_summary.replace("\n", "<​br/>")
-        elementos.append(Paragraph(clean_summary, styles["Normal"]))
-        elementos.append(Spacer(1, 20))
+        # ==========================================
+        # SUMMARY MODE
+        # ==========================================
 
+        if case_summary and case_summary.strip():
+
+            clean_summary = case_summary.replace("\n", "<br/>")
+
+            elementos.append(
+                Paragraph(clean_summary, styles["Normal"])
+            )
+
+        # ==========================================
+        # LINK MODE
+        # ==========================================
+
+        elif underwriting_link and underwriting_link.strip():
+
+            safe_link = (
+                underwriting_link
+                .strip()
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+            link_html = f'''
+            <b>Open Link →</b><br/>
+            <a href="{safe_link}">
+                {safe_link}
+            </a>
+            '''
+
+            elementos.append(
+                Paragraph(link_html, styles["Normal"])
+            )
+
+        elementos.append(Spacer(1, 20))
+    
     # =====================================================
-    # 🔥 DOCUMENT IMAGE
+    # DOCUMENT IMAGE
     # =====================================================
     adm_doc_status = ""
 
@@ -2868,10 +1650,8 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
         cursor.execute("SELECT status FROM aci_status WHERE process = 'ADM_DOC' LIMIT 1")
         result = cursor.fetchone()
         conn.close()
-
         if result:
             adm_doc_status = str(result[0]).strip().lower()
-
     except Exception as e:
         print(f"⚠ Error reading ADM_DOC status: {e}")
 
@@ -2879,31 +1659,28 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
 
         bloque_doc = []
         bloque_doc.append(Paragraph("Documents Required by Country", titulo_style))
-        #bloque_doc.append(Paragraph("Applicable only for Big Onboarding", nota_style))
         bloque_doc.append(Spacer(1, 10))
 
         img_reader = ImageReader(ruta_imagen)
-        w, h = img_reader.getSize()
+        w, h      = img_reader.getSize()
+        scale     = min(456 / w, 500 / h, 1)
 
-        scale = min(456 / w, 500 / h, 1)
-
-        img = Image(ruta_imagen, width=w * scale, height=h * scale)
+        img        = Image(ruta_imagen, width=w * scale, height=h * scale)
         img.hAlign = "CENTER"
 
         bloque_doc.append(img)
         bloque_doc.append(Spacer(1, 25))
-
         elementos.append(KeepTogether(bloque_doc))
 
     # =====================================================
-    # 🔥 CRP VALIDATION
+    # CRP VALIDATION TITLE
     # =====================================================
     elementos.append(Paragraph("CRP Validation", titulo_style))
     elementos.append(Spacer(1, 10))
     elementos.append(Spacer(1, 10))
 
     # =====================================================
-    # 🔥 CRP TABLE FROM aci_data
+    # CRP TABLE FROM aci_data
     # =====================================================
     try:
         conn = sqlite3.connect(sqlite_path)
@@ -2911,7 +1688,7 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT 
+            SELECT
                 "CRP number",
                 "Name",
                 "Status",
@@ -2923,20 +1700,14 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
         rows = cursor.fetchall()
         conn.close()
 
-        data = [[
-            "CRP number",
-            "Name",
-            "Status",
-            "Role type",
-            "Personal ID number"
-        ]]
+        data = [["CRP number", "Name", "Status", "Role type", "Personal ID number"]]
 
         for r in rows:
             data.append([
-                Paragraph(str(r["CRP number"]) if r["CRP number"] else "", styles["Normal"]),
-                Paragraph(str(r["Name"]) if r["Name"] else "", styles["Normal"]),
-                Paragraph(str(r["Status"]) if r["Status"] else "", styles["Normal"]),
-                Paragraph(str(r["Role type"]) if r["Role type"] else "", styles["Normal"]),
+                Paragraph(str(r["CRP number"])       if r["CRP number"]       else "", styles["Normal"]),
+                Paragraph(str(r["Name"])              if r["Name"]              else "", styles["Normal"]),
+                Paragraph(str(r["Status"])            if r["Status"]            else "", styles["Normal"]),
+                Paragraph(str(r["Role type"])         if r["Role type"]         else "", styles["Normal"]),
                 Paragraph(str(r["Personal ID number"]) if r["Personal ID number"] else "", styles["Normal"])
             ])
 
@@ -2964,65 +1735,7 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
     elementos.append(Spacer(1, 20))
 
     # =====================================================
-    # 🔥 IMAGES
-    # =====================================================
-    imagenes = sorted(screenshots_dir.glob(f"{case_number}_*.png"))
-
-    procesos_dict = defaultdict(lambda: defaultdict(dict))
-
-    for img_path in imagenes:
-        nombre = img_path.stem.replace(f"{case_number}_", "")
-        is_before = "_BEFORE" in nombre
-        nombre_clean = nombre.replace("_BEFORE", "")
-
-        match = re.search(r"_part_(\d+)", nombre_clean)
-        part = int(match.group(1)) if match else 0
-
-        base_name = re.sub(r"_part_\d+", "", nombre_clean)
-
-        if is_before:
-            procesos_dict[base_name][part]["before"] = img_path
-        else:
-            procesos_dict[base_name][part]["after"] = img_path
-
-    max_width_half = 220
-    max_width_single = 456
-    max_height = 500
-
-    def preparar_imagen(img_path, max_width, max_height):
-        reader = ImageReader(str(img_path))
-        w, h = reader.getSize()
-        scale = min(max_width / w, max_height / h, 1)
-        return Image(str(img_path), width=w * scale, height=h * scale), h * scale
-
-    crp_header_shown = False
-    procuraduria_header_shown = False
-    rues_header_shown = False
-    admin_header_shown = False
-    blacklist_header_shown = False  # ← NUEVO FLAG
-
-    # =====================================================
-    # 🔥 ORDEN PERSONALIZADO DE PROCESOS
-    # =====================================================
-    def get_process_order(proceso):
-        p = proceso.upper()
-        if p.startswith("ADM"): return 1
-        elif "RUES" in p or "SUNAT" in p: return 2
-        elif "PROCURADURIA" in p: return 3
-        elif p == "GOOGLE_URL": return 4
-        elif "CRP-" in p: return 5
-        elif "MERCHANT_NAME" in p: return 6
-        elif "MERCHANT_EMAIL" in p: return 7
-        elif p == "GOOGLE_MAPS": return 8
-        else: return 99
-
-    procesos_ordenados = sorted(
-        procesos_dict.items(),
-        key=lambda x: (get_process_order(x[0]), x[0])
-    )
-
-    # =====================================================
-    # ✅ Cargar estados desde aci_status
+    # LOAD STATUS DICT
     # =====================================================
     conn = sqlite3.connect(sqlite_path)
     cursor = conn.cursor()
@@ -3046,17 +1759,125 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
         return ""
 
     # =====================================================
-    # 🔥 LOOP PRINCIPAL DE PROCESOS
+    # HELPER — render Gemini txt content
+    # Lines starting with http → grey link style
+    # Lines starting with === → skip (redundant header)
+    # All other lines → normal text
     # =====================================================
-    for proceso, partes in procesos_ordenados:
+    def render_gemini_content(text: str) -> list:
+        """
+        Parse Gemini result text and return a list of Paragraph elements.
+        URLs rendered in grey (#777777), header lines (===) skipped.
+        """
+        paragraphs = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                paragraphs.append(Spacer(1, 4))
+                continue
+            # Skip === header line — already shown as bold title above
+            if line.startswith("===") and line.endswith("==="):
+                continue
+            # URL line → grey
+            if line.startswith("http://") or line.startswith("https://"):
+                safe_url = line.replace("&", "&amp;")
+                paragraphs.append(Paragraph(
+                    f'<font color="#777777">{safe_url}</font>',
+                    link_style
+                ))
+            else:
+                # Escape special XML chars
+                safe_line = (
+                    line
+                    .replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                )
+                paragraphs.append(Paragraph(safe_line, styles["Normal"]))
+        return paragraphs
+
+    # =====================================================
+    # IMAGES — screenshot-based processes
+    # =====================================================
+    imagenes = sorted(screenshots_dir.glob("*.png"))
+
+    procesos_dict = defaultdict(lambda: defaultdict(dict))
+
+    for img_path in imagenes:
+        nombre      = img_path.stem
+        is_before   = "_BEFORE" in nombre
+        nombre_clean = nombre.replace("_BEFORE", "")
+
+        match     = re.search(r"_part_(\d+)", nombre_clean)
+        part      = int(match.group(1)) if match else 0
+        base_name = re.sub(r"_part_\d+", "", nombre_clean)
+
+        if is_before:
+            procesos_dict[base_name][part]["before"] = img_path
+        else:
+            procesos_dict[base_name][part]["after"] = img_path
+
+    max_width_half   = 220
+    max_width_single = 456
+    max_height       = 500
+
+    def preparar_imagen(img_path, max_width, max_height):
+        reader = ImageReader(str(img_path))
+        w, h   = reader.getSize()
+        scale  = min(max_width / w, max_height / h, 1)
+        return Image(str(img_path), width=w * scale, height=h * scale), h * scale
+
+    admin_header_shown        = False
+    blacklist_header_shown    = False
+    procuraduria_header_shown = False
+    rues_header_shown         = False
+    merchant_header_shown     = False
+    crp_header_shown          = False
+
+    # =====================================================
+    # PROCESS ORDER
+    # Google_MAPS is last (99) so Gemini results come before it
+    # =====================================================
+    def get_process_order(proceso):
+        p = proceso.upper()
+        if p.startswith("ADM"):            return 1
+        elif "RUES" in p or "SUNAT" in p:  return 2
+        elif "PROCURADURIA" in p:          return 3
+        elif p == "GOOGLE_URL":            return 4
+        elif p == "GOOGLE_MAPS":           return 99
+        else:                              return 50
+
+    # Split screenshot processes into two groups:
+    # before_maps  → ADM, RUES, SUNAT, PROCURADURIA, Google_URL
+    # after_gemini → Google_MAPS (rendered after Gemini block)
+    procesos_ordenados = sorted(
+        procesos_dict.items(),
+        key=lambda x: (get_process_order(x[0]), x[0])
+    )
+
+    procesos_before_maps = [
+        (p, parts) for p, parts in procesos_ordenados
+        if get_process_order(p) < 99
+    ]
+
+    procesos_maps = [
+        (p, parts) for p, parts in procesos_ordenados
+        if get_process_order(p) == 99
+    ]
+
+    # =====================================================
+    # SCREENSHOT LOOP HELPER
+    # =====================================================
+    def render_screenshot_proceso(proceso, partes):
+
+        nonlocal admin_header_shown, blacklist_header_shown
+        nonlocal procuraduria_header_shown, rues_header_shown
 
         process_status = get_pdf_process_status(proceso)
-
         if process_status == "missing data":
             print(f"⏭ Skipping PDF section for {proceso} (missing data)")
-            continue
+            return
 
-        # ✅ NUEVO: Insertar título Blacklist justo después de que termina ADMIN
         if not blacklist_header_shown and not proceso.upper().startswith("ADM"):
             blacklist_header_shown = True
             elementos.append(Spacer(1, 10))
@@ -3065,32 +1886,30 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
                 'a search is performed by name and ID in the blacklist).',
                 titulo_style
             ))
-            elementos.append(Spacer(1, 10))  # 3 renglones de espacio
+            elementos.append(Spacer(1, 10))
             elementos.append(Spacer(1, 10))
             elementos.append(Spacer(1, 10))
 
         first = True
 
         for part in sorted(partes.keys()):
-            imgs = partes[part]
+            imgs   = partes[part]
             bloque = []
 
             if first:
 
                 if proceso.upper().startswith("ADM"):
-
                     if not admin_header_shown:
                         bloque.append(Paragraph(
-                            "Admin Whitelist Verification (Search in Admin using name, identification number, website, and email)",
+                            "Admin Whitelist Verification (Search in Admin using name, "
+                            "identification number, website, and email)",
                             titulo_style
                         ))
                         bloque.append(Spacer(1, 10))
                         admin_header_shown = True
-
                     bloque.append(Paragraph(f"<b>{proceso}</b>", titulo_style))
 
                 elif "PROCURADURIA" in proceso.upper():
-
                     if not procuraduria_header_shown:
                         bloque.append(Paragraph(
                             "<b>Background Check of the Merchant and Related Parties</b>",
@@ -3104,70 +1923,26 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
                         ))
                         bloque.append(Spacer(1, 10))
                         procuraduria_header_shown = True
-
                     bloque.append(Paragraph(f"<b>{proceso}</b>", titulo_style))
 
-                elif "CRP-" in proceso:
-
-                    if not crp_header_shown:
-                        bloque.append(Paragraph(
-                            "Open-Source Search for News or Findings Related to the Merchant",
-                            titulo_style
-                        ))
-                        bloque.append(Paragraph(
-                            "Search using: legal name (without legal suffix), trade name, email, and related parties (with and without string).<br/>"
-                            "If negative news is found, a deeper investigation must be conducted.<br/>"
-                            "Related companies must be manually added in Salesforce for screening.<br/><br/>"
-                            "Best practice (optional): review LinkedIn profiles and search related IDs in Google.",
-                            nota_style
-                        ))
-                        bloque.append(Spacer(1, 10))
-                        crp_header_shown = True
-
-                    bloque.append(Paragraph(f"<b>{proceso}</b>", titulo_style))
-
-                    try:
-                        ai_results_dir = Path(sqlite_path).parent / "ai_results"
-                        ai_file = ai_results_dir / f"Resultado_AI_{proceso}.txt"
-
-                        if ai_file.exists():
-                            with open(ai_file, "r", encoding="utf-8") as f:
-                                ai_text = f.read().strip()
-
-                            if ai_text:
-                                bloque.append(Spacer(1, 6))
-                                ai_text_clean = ai_text.replace("\n", "<​br/>")
-                                bloque.append(Paragraph(ai_text_clean, styles["Normal"]))
-                                bloque.append(Spacer(1, 10))
-
-                    except Exception as e:
-                        print(f"⚠ Error loading AI text for {proceso}: {e}")
-
-                elif "RUES" in proceso:
-
+                
+                elif ("RUES" in proceso or "SUNAT" in proceso):
                     if not rues_header_shown:
                         bloque.append(Paragraph(
                             "<b>RUES (Merchant Identification and Verification)</b>",
                             titulo_style
                         ))
                         bloque.append(Paragraph(
-                            
-                            "For other LATAM countries refer to “Prevalidation documents file<br/>"
+                            "For other LATAM countries refer to Prevalidation documents file<br/>"
                             "and upload the relevant supporting evidence within the case or opportunity<br/>",
                             nota_style
                         ))
-                        
                         bloque.append(Spacer(1, 10))
                         rues_header_shown = True
-
                     bloque.append(Paragraph(f"<b>{proceso}</b>", titulo_style))
 
                 elif proceso == "Google_URL":
-
-                    bloque.append(Paragraph(
-                        "<b>Economic Activity Identification</b>",
-                        titulo_style
-                    ))
+                    bloque.append(Paragraph("<b>Economic Activity Identification</b>", titulo_style))
                     bloque.append(Paragraph(
                         "Home/About section must be present.<br/>"
                         "Products and services must be present.<br/>"
@@ -3177,13 +1952,13 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
                     ))
 
                 elif proceso == "Google_MAPS":
-
                     bloque.append(Paragraph(
                         "<b>Business Address Verification in Google Maps</b>",
                         titulo_style
                     ))
                     bloque.append(Paragraph(
-                        "If the address is not found in Google Maps, validate it using Facebook, Instagram, or LinkedIn.",
+                        "If the address is not found in Google Maps, validate it using "
+                        "Facebook, Instagram, or LinkedIn.",
                         nota_style
                     ))
 
@@ -3191,46 +1966,27 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
                     titulo = PROCESS_NAMES.get(proceso, proceso)
                     bloque.append(Paragraph(f"<b>{titulo}</b>", titulo_style))
 
-                    try:
-                        ai_results_dir = Path(sqlite_path).parent / "ai_results"
-                        ai_file = ai_results_dir / f"Resultado_AI_{proceso}.txt"
-
-                        if ai_file.exists():
-                            with open(ai_file, "r", encoding="utf-8") as f:
-                                ai_text = f.read().strip()
-
-                            if ai_text:
-                                bloque.append(Spacer(1, 6))
-                                ai_text_clean = ai_text.replace("\n", "<​br/>")
-                                bloque.append(Paragraph(ai_text_clean, styles["Normal"]))
-                                bloque.append(Spacer(1, 10))
-
-                    except Exception as e:
-                        print(f"⚠ Error loading AI text for {proceso}: {e}")
-
                 bloque.append(Spacer(1, 10))
                 first = False
 
             if "before" in imgs and "after" in imgs:
                 img_before, _ = preparar_imagen(imgs["before"], max_width_half, max_height)
-                img_after, _ = preparar_imagen(imgs["after"], max_width_half, max_height)
-
-                table = Table([
-                    ["Before Search", "After Search"],
-                    [img_before, img_after]
-                ], colWidths=[max_width_half, max_width_half])
-
+                img_after, _  = preparar_imagen(imgs["after"],  max_width_half, max_height)
+                table = Table(
+                    [["Before Search", "After Search"], [img_before, img_after]],
+                    colWidths=[max_width_half, max_width_half]
+                )
                 bloque.append(table)
                 bloque.append(Spacer(1, 25))
 
             elif "after" in imgs:
-                img, _ = preparar_imagen(imgs["after"], max_width_single, max_height)
+                img, _     = preparar_imagen(imgs["after"], max_width_single, max_height)
                 img.hAlign = "CENTER"
                 bloque.append(img)
                 bloque.append(Spacer(1, 25))
 
             elif "before" in imgs:
-                img, _ = preparar_imagen(imgs["before"], max_width_single, max_height)
+                img, _     = preparar_imagen(imgs["before"], max_width_single, max_height)
                 img.hAlign = "CENTER"
                 bloque.append(img)
                 bloque.append(Spacer(1, 25))
@@ -3238,7 +1994,105 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
             elementos.append(KeepTogether(bloque))
 
     # =====================================================
-    # 🔥 BUILD PDF
+    # RENDER ADM / RUES / SUNAT / PROCURADURIA / Google_URL
+    # =====================================================
+    for proceso, partes in procesos_before_maps:
+        render_screenshot_proceso(proceso, partes)
+
+    # =====================================================
+    # GEMINI RESULTS — Merchant Name, Merchant Email, CRP
+    # Rendered BEFORE Google Maps
+    # =====================================================
+    ai_results_dir = (
+        Path(sqlite_path).parent
+        / "ai_results"
+        / str(case_number)
+    )
+
+    if ai_results_dir.exists():
+
+        def get_gemini_order(filename):
+            name = filename.stem.replace("Resultado_AI_", "")
+            if name.startswith("Merchant_Name"):  return (1, name)
+            if name.startswith("Merchant_Email"): return (2, name)
+            if name.startswith("CRP"):            return (3, name)
+            return (99, name)
+
+        ai_txt_files = sorted(
+            ai_results_dir.glob("Resultado_AI_*.txt"),
+            key=get_gemini_order
+        )
+
+        for ai_file in ai_txt_files:
+
+            process_name = ai_file.stem.replace("Resultado_AI_", "")
+
+            # Only Gemini processes
+            if not (
+                process_name.startswith("CRP") or
+                process_name.startswith("Merchant_Name") or
+                process_name.startswith("Merchant_Email")
+            ):
+                continue
+
+            # Skip missing data
+            process_status = status_dict.get(process_name, "")
+            if process_status == "missing data":
+                print(f"⏭ Skipping Gemini PDF section for {process_name} (missing data)")
+                continue
+
+            # Read content
+            try:
+                with open(ai_file, "r", encoding="utf-8") as f:
+                    ai_text = f.read().strip()
+            except Exception as e:
+                print(f"⚠ Error reading {ai_file}: {e}")
+                continue
+
+            if not ai_text:
+                continue
+
+            bloque = []
+
+            # Section header — shown once for the entire Merchant + CRP block
+            if (
+                process_name.startswith("Merchant_") or process_name.startswith("CRP")
+            ) and not merchant_header_shown and not crp_header_shown:
+                bloque.append(Spacer(1, 10))
+                bloque.append(Paragraph(
+                    "Open-Source Search for News or Findings Related to the Merchant",
+                    titulo_style
+                ))
+                bloque.append(Paragraph(
+                    "Search using: legal name (without legal suffix), trade name, and email "
+                    "(with and without risk string), and related parties.<br/>"
+                    "If negative news is found, a deeper investigation must be conducted.<br/>"
+                    "Related companies must be manually added in Salesforce for screening.<br/><br/>"
+                    "Best practice (optional): review LinkedIn profiles and search related IDs in Google.",
+                    nota_style
+                ))
+                bloque.append(Spacer(1, 10))
+                merchant_header_shown = True
+                crp_header_shown = True
+
+            # Process title
+            bloque.append(Paragraph(f"<b>{process_name}</b>", titulo_style))
+            bloque.append(Spacer(1, 6))
+
+            # Content — URLs in grey, === headers skipped
+            bloque.extend(render_gemini_content(ai_text))
+            bloque.append(Spacer(1, 15))
+
+            elementos.append(KeepTogether(bloque))
+
+    # =====================================================
+    # GOOGLE MAPS — rendered AFTER Gemini results
+    # =====================================================
+    for proceso, partes in procesos_maps:
+        render_screenshot_proceso(proceso, partes)
+
+    # =====================================================
+    # BUILD PDF
     # =====================================================
     doc = SimpleDocTemplate(
         str(output_pdf),
@@ -3246,6 +2100,9 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
         topMargin=80
     )
 
+    print("🔥 BUILDING PDF DOCUMENT")
+    print(f"📦 Total elementos: {len(elementos)}")
+    
     doc.build(
         elementos,
         onFirstPage=draw_header,
@@ -3253,6 +2110,7 @@ def generar_reporte_pdf(case_number, sqlite_path, admin_user, case_summary=None,
     )
 
     print(f"📄 PDF report created: {output_pdf}")
+    print("🔥 PDF BUILD COMPLETED")
 
 
 async def initialize_admin_browser(playwright):
@@ -3371,57 +2229,7 @@ async def admin_validation_process(process, page_admin, tax_id, email, website, 
    
 google_semaphore = asyncio.Semaphore(2)
 
-async def google_search_process(process, crp_dict, page_google, browser_google, playwright):
-
-    print("GOOGLE SEARCH FUNCTION CALLED")
-    print("PROCESS:", process)
-
-    if process.endswith("_String"):
-        crp_number = process.replace("_String", "")
-        search_type = "string"
-    else:
-        crp_number = process
-        search_type = "normal"
-
-    crp_name = crp_dict.get(crp_number)
-
-    print(f"CRP {crp_number} → {crp_name}")
-
-    if not crp_name:
-        print(f"⚠ CRP name not found for {process}")
-        return page_google, browser_google
-
-    if search_type == "string":
-        query = build_risk_query(crp_name)
-    else:
-        query = f'"{crp_name}"'
-
-    max_attempts = 5
-
-    for attempt in range(1, max_attempts + 1):
-
-        print(f"🔎 Google attempt {attempt}/{max_attempts}")
-
-        await asyncio.sleep(random.uniform(4, 12))
-
-        async with google_semaphore:
-            print("🌐 Entering Google semaphore...")
-            await google_search(page_google, query)
-            print("🌐 Leaving Google semaphore...")
-
-        page_google, browser_google, captcha = await handle_google_captcha(
-            playwright,
-            page_google,
-            browser_google,
-            query=query
-        )
-
-        if not captcha:
-            return page_google, browser_google, True  # ✅ éxito
-
-    print(f"🚨 Max CAPTCHA attempts reached for: {process}")
-    return page_google, browser_google, False  # ❌ fallo por CAPTCHA
-     
+   
 async def Buscar_URL_Google(website, page_google, sqlite_path, case_number, process):
 
     try:
@@ -3565,7 +2373,8 @@ async def Busqueda_procuraduria(numero_documento, page_google, sqlite_path, case
                     page_google,
                     sqlite_path,
                     case_number,
-                    process
+                    process,
+                    custom_name=f"{process}_RESULT"
                 )
 
                 print(f"📸 Screenshot OK: {process}")
@@ -3605,11 +2414,6 @@ async def process_with_retries_async(sqlite_path, process, ejecutar_async):
                 update_process_status(sqlite_path, process, "completed")
                 return True
 
-            except CaptchaExhaustedError as ce:
-                # 🔥 No reintentar aquí, dejar en processing para la ronda
-                print(f"⏸ [{process}] CAPTCHA exhausted → leaving in 'processing' for round retry")
-                # NO actualizar status → queda en 'processing'
-                return False  # salir del wrapper sin marcar completed ni error
 
             except Exception as e:
                 print(f"⚠ [{process}] Attempt {intento}/{MAX_RETRIES} failed: {e}")
@@ -3886,7 +2690,7 @@ async def search_RUES( tax_id, page_google, sqlite_path, case_number, process ):
 # ==========================================================
 # MAIN SUNAT FUNCTION
 # ==========================================================
-async def search_SUNAT(tax_id, page_google, case_number, process):
+async def search_SUNAT( tax_id, page_google, sqlite_path, case_number, process ): 
 
     error_screenshot = None
 
@@ -3924,9 +2728,14 @@ async def search_SUNAT(tax_id, page_google, case_number, process):
 
             # 📸 FIRST SCREENSHOT
             await capture_process_screenshot(
-                page_google, case_number, process,
+                page_google,
+                sqlite_path,
+                case_number,
+                process,
                 custom_name=f"{process}_RUC_GENERAL"
             )
+            
+            
 
             # ================= CLICK REPRESENTANTES =================
             await page_google.locator(".btnInfRepLeg").click()
@@ -3944,10 +2753,14 @@ async def search_SUNAT(tax_id, page_google, case_number, process):
 
                     # 📸 SECOND SCREENSHOT
                     await capture_process_screenshot(
-                        page_google, case_number, process,
+                        page_google,
+                        sqlite_path,
+                        case_number,
+                        process,
                         custom_name=f"{process}_RUC_REPRESENTANTES_LEGALES"
                     )
-
+            
+                    
                 else:
                     print("⚠ No representatives found")
                     error_screenshot = f"{process}_NO_RESULTS_REPRESENTANTES"
@@ -3967,7 +2780,10 @@ async def search_SUNAT(tax_id, page_google, case_number, process):
     # ================= FINAL ERROR SCREENSHOT =================
     if error_screenshot:
         await capture_process_screenshot(
-            page_google, case_number, process,
+            page_google,
+            sqlite_path,
+            case_number,
+            process,
             custom_name=error_screenshot
         )
 
@@ -4015,517 +2831,876 @@ def update_process_status(sqlite_path, process, message):
 
     conn.close()
 
-def get_process_group(process_name):
 
+
+
+import subprocess
+import requests
+import time
+
+# ==========================================================
+# CONFIGURATION
+# ==========================================================
+
+CDP_URL    = "http://localhost:9222"
+TARGET_URL = "https://gemini.google.com/app"
+
+SPINNER          = "div.bard-avatar.thinking"
+STOP_BUTTON      = "div.blue-circle.stop-icon"
+TEXTAREA         = "div.ql-editor[contenteditable='true']"
+SEND_BUTTON      = "button.send-button.submit"
+RESPONSE_BLOCK   = "div.presented-response-container"
+RESPONSE_CONTENT = "div[id^='model-response-message-content']"
+
+MAX_GEMINI_RETRIES = 3
+
+# ==========================================================
+# CHROME CDP
+# ==========================================================
+
+def wait_for_chrome(timeout=15):
+    """Wait until Chrome exposes the remote debugging port."""
+    for i in range(timeout):
+        try:
+            requests.get(CDP_URL, timeout=1)
+            print(f"[Chrome] ✅ Chrome ready after {i+1}s.")
+            return
+        except Exception:
+            print(f"  ... attempt {i+1}/{timeout}")
+            time.sleep(1)
+    raise TimeoutError("❌ Chrome did not expose port 9222 in time.")
+
+
+def launch_chrome_if_needed():
+    """Launch Chrome with remote debugging if it is not already running."""
     try:
-            
-        if process_name.startswith("ADM"):
-            return "ADMIN"
+        requests.get(CDP_URL, timeout=2)
+        print("[Chrome] ✅ Chrome with remote debugging is already running.")
+    except Exception:
+        print("[Chrome] ⚠️ Chrome not running, attempting to launch...")
 
-        elif process_name.startswith("CRP"):
-            return "CRP"
+        chrome_paths = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            rf"C:\Users\{os.environ.get('USERNAME', '')}\AppData\Local\Google\Chrome\Application\chrome.exe",
+        ]
 
-        elif process_name.startswith("Google_PROCURADURIA_"):
-            return "PROCURADURIA"
+        chrome_executable = next((p for p in chrome_paths if os.path.exists(p)), None)
 
-        elif process_name in ("Google_URL", "Google_MAPS", "Google_RUES"):
-            return "GOOGLE"
+        if not chrome_executable:
+            raise FileNotFoundError("❌ Chrome executable not found in any known path.")
 
-        return "OTHER"
+        user_data_dir = rf"C:\Users\{os.environ.get('USERNAME', 'default')}\AppData\Local\Temp\chrome-debug"
 
+        subprocess.Popen([
+            chrome_executable,
+            "--remote-debugging-port=9222",
+            f"--user-data-dir={user_data_dir}",
+            "--no-first-run",
+            "--no-default-browser-check"
+        ])
+
+        wait_for_chrome(timeout=15)
+
+
+# ==========================================================
+# PROMPT LOADER
+# ==========================================================
+
+def load_prompt(filepath: str, entity: str) -> str:
+    """Read prompt file and replace the placeholder with the target entity."""
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+    return content.replace("[ENTIDAD]", f"{entity}")
+
+
+# ==========================================================
+# HELPERS
+# ==========================================================
+
+async def element_exists(page, selector: str) -> bool:
+    """Return True if the selector matches at least one element on the page."""
+    try:
+        return await page.locator(selector).count() > 0
+    except Exception:
+        return False
+
+
+async def clear_and_send_prompt(page, prompt: str) -> None:
+    """Clear the Gemini textarea, paste the prompt, and submit it."""
+    textarea = page.locator(TEXTAREA)
+    await textarea.click()
+    await asyncio.sleep(0.5)
+    await textarea.press("Control+a")
+    await textarea.press("Delete")
+    await asyncio.sleep(0.3)
+
+    await page.evaluate("""async (text) => {
+        await navigator.clipboard.writeText(text);
+    }""", prompt)
+
+    await textarea.press("Control+v")
+    await asyncio.sleep(2)
+    await textarea.press("Enter")
+    print("✅ Prompt submitted")
+
+
+async def scroll_page(page) -> None:
+    """Scroll the page to simulate human activity while Gemini processes."""
+    for _ in range(3):
+        await page.mouse.wheel(0, 500)
+        await asyncio.sleep(random.uniform(0.8, 1.5))
+        if await element_exists(page, SPINNER):
+            return
+        await page.mouse.wheel(0, 500)
+        await asyncio.sleep(random.uniform(0.8, 1.5))
+        if await element_exists(page, SPINNER):
+            return
+        await page.mouse.wheel(0, -500)
+        await asyncio.sleep(random.uniform(0.8, 1.5))
+        if await element_exists(page, SPINNER):
+            return
+        await page.mouse.wheel(0, -500)
+        await asyncio.sleep(random.uniform(0.8, 1.5))
+        if await element_exists(page, SPINNER):
+            return
+
+
+async def extract_response(page) -> str | None:
+    """Extract the last response text from the Gemini chat."""
+    try:
+        last_block  = page.locator(RESPONSE_BLOCK).last
+        content_div = last_block.locator(RESPONSE_CONTENT)
+        await content_div.wait_for(state="visible", timeout=15_000)
+        text = await content_div.inner_text()
+        return text.strip() or None
     except Exception as e:
+        print(f"⚠️ Error extracting response: {e}")
+        return None
 
-            print(f"❌ Error in get_process_group: {e}")
 
-def get_images_for_ai_process(sqlite_path, case_number, process):
-    """
-    Retorna la lista de imágenes correspondientes a un proceso AI.
+# ==========================================================
+# GEMINI RESPONSE MONITOR
+# ==========================================================
 
-    - CRP-XXXX_AI → solo imágenes normales
-    - CRP-XXXX_String_AI → solo imágenes con _String
-    """
-
-    try:
-        # =====================================================
-        # 📂 UBICAR CARPETA DE SCREENSHOTS
-        # =====================================================
-        base_path = Path(sqlite_path).parent
-        screenshots_path = base_path / "screenshots"
-
-        if not screenshots_path.exists():
-            print("⚠ Screenshots folder not found")
-            return []
-
-        # =====================================================
-        # 🔥 LIMPIAR NOMBRE DEL PROCESO
-        # =====================================================
-        base_name = process.replace("_AI", "")  # CRP-XXXX o CRP-XXXX_String
-
-        print(f"🔎 Searching images for: {base_name}")
-
-        # =====================================================
-        # 📸 LISTAR TODAS LAS IMÁGENES
-        # =====================================================
-        all_images = list(screenshots_path.glob("*.png"))
-
-        if not all_images:
-            print("⚠ No images found in folder")
-            return []
-
-        # =====================================================
-        # 🔍 FILTRAR SEGÚN TIPO
-        # =====================================================
-        if "_String" in base_name:
-
-            # 🟣 SOLO STRING LIMPIO
-            filtered_images = [
-                str(img) for img in all_images
-                if base_name in img.name
-                and "_part_" in img.name
-            ]
-
-        else:
-
-            # 🔵 SOLO NORMAL (EXCLUYE STRING Y OTROS PROCESOS)
-            filtered_images = [
-                str(img) for img in all_images
-                if base_name in img.name
-                and "_part_" in img.name
-                and "_String" not in img.name
-                and "PROCURADURIA" not in img.name
-                and "RUES" not in img.name
-                and "MAPS" not in img.name
-            ]
-
-        # =====================================================
-        # 🔢 ORDENAR IMÁGENES
-        # =====================================================
-        filtered_images.sort()
-
-        print(f"📸 Images found: {len(filtered_images)}")
-
-        return filtered_images
-
-    except Exception as e:
-        print(f"❌ Error getting images: {e}")
-        return []
-
-# ============================================================================
-# AI WORKER
-# ============================================================================
-async def initialize_ai_browser(playwright):
-    
-    try:
-
-        browser = await playwright.chromium.launch(
-            headless=False
-        )
-
-        context = await browser.new_context(accept_downloads=True)
-
-        page = await context.new_page()
-
-        return browser, page
-
-    except Exception as e:
-
-        print(f"❌ Error in initialize_ai_browser: {e}")
-        return None, None
-
-# ============================================================================
-# AI WORKER
-# ============================================================================
-async def run_ai_worker(page_AI, process, sqlite_path, case_number, carpeta_salida_ai, prompt_path):
-
-    try:
-
-        # ===============================
-        # 🔍 Worker context info
-        # ===============================
-        print("\n🧠 ===============================")
-        print("🤖 AI WORKER START")
-        print(f"📌 Process: {process}")
-        print(f"📂 SQLite: {sqlite_path}")
-        print(f"🧾 Case: {case_number}")
-        print(f"📁 Output folder: {carpeta_salida_ai}")
-        print(f"📄 Prompt path: {prompt_path}")
-        print("🧠 ===============================\n")
-
-        # =====================================================
-        # 🔥 GET IMAGES FOR THIS PROCESS
-        # =====================================================
-        imagenes = get_images_for_ai_process(
-            sqlite_path,
-            case_number,
-            process
-        )
-
-        print(f"📸 Total images found: {len(imagenes) if imagenes else 0}")
-
-        # 👉 No images → marcar como skipped, no como completed
-        if not imagenes:
-            print(f"⚠ No images found for {process} → marking as skipped")
-            update_process_status(sqlite_path, process, "skipped: no screenshots found")
-            return True  # True para que process_with_retries no lo marque como failed
-
-        # =====================================================
-        # 🔥 CLEAN DOCUMENT ID
-        # =====================================================
-        document_id = process.replace("_AI", "")
-        print(f"🧾 Document ID: {document_id}")
-
-        # =====================================================
-        # 🔥 CALL AI PROCESS
-        # =====================================================
-        print(f"🚀 Sending process to AI: {process}")
-
-        result = await AI_Process(
-            page_AI,
-            imagenes,
-            carpeta_salida_ai,
-            prompt_path,
-            document_id
-        )
-
-        print(f"📥 Raw AI result: {result}")
-
-        # =====================================================
-        # 🔍 RESULT DEBUG
-        # =====================================================
-        if result and isinstance(result, tuple):
-            print(f"📊 AI status: {'SUCCESS' if result[0] else 'FAIL'}")
-
-        # =====================================================
-        # 🔥 HANDLE RESULT
-        # =====================================================
-        if result and isinstance(result, tuple) and result[0]:
-            print(f"🏁 END AI WORKER SUCCESS: {process}")
+async def monitor_spinner(page) -> bool:
+    """Wait until the thinking spinner disappears."""
+    for attempt in range(1, 6):
+        if not await element_exists(page, SPINNER):
+            print(f"[Spinner {attempt}/5] ✅ Spinner gone")
             return True
+
+        print(f"[Spinner {attempt}/5] 🔄 Processing...")
+
+        if attempt < 5:
+            for _ in range(60):
+                await asyncio.sleep(1)
+                if not await element_exists(page, SPINNER):
+                    return True
         else:
-            print(f"🏁 END AI WORKER FAILED: {process}")
+            print("⛔ Spinner persisted after 5 attempts")
             return False
 
-    except Exception as e:
-        print(f"❌ Error in AI worker {process}: {e}")
-        return False
 
+async def monitor_stop_button(page):
+    """
+    Wait until the stop button disappears (response finished).
+    Returns True on success, False on timeout, None if spinner reappeared.
+    """
+    for attempt in range(1, 6):
+        if not await element_exists(page, STOP_BUTTON):
+            print(f"[Stop {attempt}/5] ✅ Response complete")
+            return True
 
-# ============================================================================
-# LOGIN INTO ABACUS AI
-# ============================================================================
-# ============================================================================
-# LOGIN INTO ABACUS AI
-# ============================================================================
-async def login_abacus_ai(page, email, password):
+        print(f"[Stop {attempt}/5] 🔄 Response in progress...")
 
-    try:
-        await page.goto("https://apps.abacus.ai/chatllm/?appId=99650cb1c")
+        if attempt < 5:
+            for _ in range(60):
+                await asyncio.sleep(1)
+                if not await element_exists(page, STOP_BUTTON):
+                    return True
 
-        await page.fill('input[name="email"]', email)
-        await page.fill('input[name="question"]', password)
-
-        await page.click('button[type="submit"]')
-
-        # 🔍 VALIDAR LOGIN
-        textarea_selector = 'textarea[placeholder="Write something..."]'
-        await page.wait_for_selector(textarea_selector, timeout=10000)
-
-        print("✅ Login exitoso")
-        return True
-
-    except Exception as e:
-        print(f"❌ Login fallido: {e}")
-        return False
-
-       
-# ============================================================================
-# Validate Legal Text Before AI Processing
-# ============================================================================
-# Ensures the extracted legal text is valid before sending it to AI.
-def is_valid_legal_text(text):
-    try:
-        
-        if not text:
+            if await element_exists(page, SPINNER):
+                print("🔁 Spinner reappeared → restarting cycle")
+                return None
+        else:
+            print("⛔ Stop button persisted after 5 attempts")
             return False
 
-        normalized = normalizar(text)
 
-        if "informacion no disponible" in normalized:
-            return False
+async def monitor_gemini(page) -> tuple[bool, str | None]:
+    """Orchestrate spinner + stop button monitoring and extract the response."""
+    await asyncio.sleep(5)
 
-        if len(text.strip()) < 20:
-            return False
-
-        return True 
-    except Exception as e:
-
-            print(f"❌ Error in is_valid_legal_text: {e}")
-      
-
-# ============================================================================
-# MAIN AI PROCESS
-# ============================================================================
-async def AI_Process(page_AI, imagenes, Ruta_Resultado_AI, Ruta_prompt_txt, document_id): 
-
-    try:
-
-        print("\n🤖 ===== AI_PROCESS START =====")
-        print(f"📄 Document ID: {document_id}")
-        print(f"📂 Output path: {Ruta_Resultado_AI}")
-        print(f"📄 Prompt file: {Ruta_prompt_txt}")
-
-        # =====================================================
-        # 🔹 LOAD PROMPT
-        # =====================================================
-        if not os.path.exists(Ruta_prompt_txt):
-            print(f"❌ PROMPT FILE NOT FOUND: {Ruta_prompt_txt}")
-            print("🏁 AI_PROCESS FAILED (NO PROMPT)")
+    while True:
+        spinner_ok = await monitor_spinner(page)
+        if not spinner_ok:
             return False, None
 
-        with open(Ruta_prompt_txt, "r", encoding="utf-8") as f:
-            prompt_extractor_payu = f.read()
+        stop_result = await monitor_stop_button(page)
 
-        if not prompt_extractor_payu.strip():
-            print("❌ Prompt file is empty")
-            print("🏁 AI_PROCESS FAILED (EMPTY PROMPT)")
+        if stop_result is True:
+            text = await extract_response(page)
+            return (True, text) if text else (False, None)
+        elif stop_result is False:
             return False, None
+        elif stop_result is None:
+            continue
 
-        print(f"📝 Prompt loaded ({len(prompt_extractor_payu)} characters)")
 
-        # =====================================================
-        # 🔥 SEND PROMPT + IMAGES
-        # =====================================================
-        print("📤 Sending prompt and images to AI...")
+# ==========================================================
+# SHOW MANUAL LOGIN POPUP
+# ==========================================================
 
-        await imagenes_texto_en_AI(
-            page_AI,
-            prompt_extractor_payu,
-            imagenes
+def show_gemini_login_popup() -> bool:
+    """
+    Show a popup asking the user to log in to Gemini manually.
+    Returns True if user clicked Yes, False if No.
+    """
+    try:
+        root = tk.Tk()
+        root.withdraw()
+
+        response = messagebox.askquestion(
+            "Gemini Login Required",
+            "Gemini is not logged in.\n\nPlease sign in manually in the Chrome window and then click YES.",
+            icon="warning",
+            type="yesno"
         )
 
-        # =====================================================
-        # 🔥 WAIT FOR AI RESPONSE
-        # =====================================================
-        if await esperar_boton_normal(page_AI):
-
-            print("⬇ Downloading AI result")
-
-            selector_antiguo = 'svg[data-prefix="fad"][data-icon="download"]'
-            selector_nuevo = '[data-id="preparingDownload"]'
-
-            selector_boton = None
-
-            if await page_AI.locator(selector_nuevo).count() > 0:
-                selector_boton = selector_nuevo
-                print("Using new selector")
-
-            elif await page_AI.locator(selector_antiguo).count() > 0:
-                selector_boton = selector_antiguo
-                print("Using old selector")
-
-            else:
-                print("❌ Download button not found")
-                return False, None
-
-            # =====================================================
-            # 📂 CREATE ai_results FOLDER (LIKE SCREENSHOTS)
-            # =====================================================
-            ai_results_dir = os.path.join(Ruta_Resultado_AI, "ai_results")
-
-            os.makedirs(ai_results_dir, exist_ok=True)
-
-            # =====================================================
-            # 📄 FILE PATH INSIDE ai_results
-            # =====================================================
-            nombre_archivo = os.path.join(
-                ai_results_dir,
-                f"Resultado_AI_{document_id}.txt"
-            )
-
-            if await descargar_archivo(page_AI, selector_boton, nombre_archivo):
-                print("🏁 AI_PROCESS SUCCESS")
-                return True, nombre_archivo
-            else:
-                print("❌ File download failed")
-                print("🏁 AI_PROCESS FAILED (DOWNLOAD)")
-                return False, None
-
-        else:
-            print("❌ AI did not finish correctly")
-            print("🏁 AI_PROCESS FAILED (TIMEOUT)")
-            return False, None
+        root.destroy()
+        return response == "yes"
 
     except Exception as e:
-        print(f"❌ Error in AI_Process: {e}")
-        return False, None
-  
-# ============================================================================
-# SEND PROMPT AND IMAGES TO AI
-# ============================================================================
-async def imagenes_texto_en_AI(page, texto, imagenes):
+        print(f"❌ Error showing login popup: {e}")
+        return False
 
+
+# ==========================================================
+# OPEN A SINGLE GEMINI TAB
+# ==========================================================
+
+async def open_single_gemini_tab(context, tab_id: int):
+    """
+    Open one Gemini tab inside an existing CDP context.
+    Applies a random delay before navigating to mitigate bot detection.
+    Returns the page object.
+    """
+    page = await context.new_page()
+
+    nav_delay = random.uniform(3, 5)
+    print(f"[Tab {tab_id}] ⏳ Waiting {nav_delay:.1f}s before navigating...")
+    await asyncio.sleep(nav_delay)
+
+    await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=90_000)
+    print(f"[Tab {tab_id}] ✅ Gemini loaded")
+
+    # Dismiss popup if present
     try:
-        print("\n📨 === SENDING INPUT TO AI ===")
+        popup = page.get_by_role("button", name="Got it")
+        await popup.wait_for(state="visible", timeout=5_000)
+        await popup.click()
+    except Exception:
+        pass
 
-        await page.wait_for_timeout(4000)
-
-        textarea_selector = 'textarea[placeholder="Write something..."]'
-
-        # =====================================================
-        # 📝 WRITE PROMPT
-        # =====================================================
-        await page.fill(textarea_selector, texto)
-        print("📝 Prompt written in AI input")
-
-        await page.wait_for_timeout(1500)
-
-        # =====================================================
-        # 📸 UPLOAD IMAGES
-        # =====================================================
-        if imagenes:
-
-            print(f"📸 Uploading {len(imagenes)} images...")
-
-            for img_path in imagenes:
-                print(f"🖼️ Image: {os.path.basename(img_path)}")
-
-            await page.locator("[data-id='paperclip']").click(force=True)
-
-            await page.wait_for_selector("input[type='file']", timeout=10000)
-
-            file_inputs = page.locator("input[type='file']")
-            input_count = await file_inputs.count()
-
-            print(f"🔎 File inputs detected: {input_count}")
-
-            file_input = file_inputs.nth(input_count - 1)
-
-            await file_input.set_input_files(imagenes)
-
-            print("📤 Images loaded into input")
-
-            if await esperar_subida_imagenes(page, timeout=60):
-
-                print("✅ All images uploaded successfully")
-
-                send_button = page.locator('[data-id="send"]')
-                await send_button.wait_for(state="visible", timeout=10000)
-                await send_button.click()
-
-                print("🚀 Request sent to AI")
-
-            else:
-                print("⚠ Some images did not finish uploading")
-
-        else:
-            print("⚠ No images to upload")
-
-        await asyncio.sleep(1)
-
-    except Exception as e:
-        print(f"❌ Error in imagenes_texto_en_AI: {e}")
-
-async def esperar_subida_imagenes(page, timeout=60):
-    try:
-        """
-        Espera hasta 'timeout' segundos a que desaparezcan todos los loaders de subida de imagen.
-        Cuando desaparecen, espera 2 segundos y vuelve a validar.
-        Devuelve True si realmente desaparecen antes del timeout, False si siguen presentes.
-        """
-        await page.wait_for_timeout(4000)
-        loader_selector = 'svg.fa-arrows-rotate.fa-spin'
-        tiempo_inicial = asyncio.get_event_loop().time()
-        while True:
-            loaders = await page.query_selector_all(loader_selector)
-            if not loaders:
-                # Espera 2 segundos y vuelve a validar
-                await asyncio.sleep(3)
-                print("⏳ Waiting for image upload to complete...")
-                loaders = await page.query_selector_all(loader_selector)
-                if not loaders:
-                    return True  # Confirmado: todas las imágenes terminaron de subir
-                # Si reaparecieron loaders, sigue esperando
-            if asyncio.get_event_loop().time() - tiempo_inicial > timeout:
-                print("⏳ Waiting for image upload to complete...")
-                return False  # Timeout: aún quedan loaders
-            await asyncio.sleep(0.5)
-    except Exception as e:
-
-        print(f"❌ Error in esperar_subida_imagenes: {e}")
+    return page
 
 
-# ============================================================================
-# WAIT FOR AI RESPONSE
-# ============================================================================
-async def esperar_boton_normal(page, timeout=60, intentos=3):
+# ==========================================================
+# CHECK LOGIN AND HANDLE SIGN IN
+# Only called on Tab 1 during initialization
+# ==========================================================
 
-    print("⏳ Waiting for AI response...")
+async def check_gemini_login(page) -> bool:
 
-    for intento in range(1, intentos + 1):
+    LOGIN_SELECTOR = 'a[href*="ServiceLogin"]'
 
-        print(f"🔄 Attempt {intento} waiting for AI...")
+    while True:
 
         try:
-            await page.wait_for_selector(
-                'button:has(.fa-paper-plane):not(.cursor-not-allowed)',
-                state='visible',
-                timeout=timeout * 1000
+
+            # ==========================================
+            # DETECT LOGIN
+            # ==========================================
+
+            login_detected = await element_exists(
+                page,
+                LOGIN_SELECTOR
             )
 
-            print("✅ AI response completed")
-            return True
+            # ==========================================
+            # DETECT PROFILE PICKER
+            # ==========================================
+
+            profile_picker_detected = (
+                "profile-picker" in page.url.lower()
+            )
+
+            # ==========================================
+            # VALIDATED
+            # ==========================================
+
+            if (
+                not login_detected
+                and not profile_picker_detected
+            ):
+
+                print(
+                    "✅ [Gemini] "
+                    "Login/profile validated"
+                )
+
+                return True
+
+            # ==========================================
+            # LOGS
+            # ==========================================
+
+            if login_detected:
+
+                print(
+                    "⚠️ [Gemini] "
+                    "Google login detected"
+                )
+
+            if profile_picker_detected:
+
+                print(
+                    "⚠️ [Gemini] "
+                    "Chrome profile picker detected"
+                )
+
+            # ==========================================
+            # SHOW POPUP
+            # ==========================================
+
+            user_confirmed = show_gemini_login_popup()
+
+            if not user_confirmed:
+
+                print(
+                    "❌ User cancelled "
+                    "Gemini validation"
+                )
+
+                return False
+
+            # ==========================================
+            # WAIT BEFORE REVALIDATION
+            # ==========================================
+
+            print(
+                "🔄 Revalidating "
+                "Gemini state..."
+            )
+
+            await asyncio.sleep(3)
+
+            # ==========================================
+            # RELOAD GEMINI
+            # ==========================================
+
+            await page.goto(
+                TARGET_URL,
+                wait_until="domcontentloaded",
+                timeout=90_000
+            )
+
+            await asyncio.sleep(3)
+
+        except Exception as e:
+
+            print(
+                f"❌ Gemini validation error: {e}"
+            )
+
+            await asyncio.sleep(3)
+
+
+# ==========================================================
+# RECREATE A SINGLE FAILED TAB
+# ==========================================================
+
+async def recreate_gemini_tab(context, tab_id: int, failed_page=None):
+    """
+    Close the failed tab and open a new one in its place.
+    Applies the same random delay before navigating.
+    Returns the new page object.
+    """
+    if failed_page:
+        try:
+            await failed_page.close()
+        except Exception:
+            pass
+
+    print(f"[Tab {tab_id}] 🔄 Recreating tab after failure...")
+    new_page = await open_single_gemini_tab(context, tab_id=tab_id)
+    return new_page
+
+
+# ==========================================================
+# SEND PROMPT AND GET RESPONSE ON A GIVEN PAGE
+# ==========================================================
+async def run_gemini_on_page(page, prompt: str, tab_id: int) -> str | None:
+    """
+    Send a prompt to an already-open Gemini tab and return the response text.
+    Does NOT open or close the browser — reuses the existing page.
+    """
+
+    try:
+
+        # ==========================================
+        # VALIDATE GEMINI TEXTAREA
+        # ==========================================
+
+        textarea_exists = True
+
+        try:
+
+            await page.wait_for_selector(
+                'div[contenteditable="true"][role="textbox"]',
+                state="visible",
+                timeout=5000
+            )
 
         except Exception:
-            print("⏳ AI still processing...")
+
+            textarea_exists = False
+
+        if not textarea_exists:
+
+            print(
+                f"[Tab {tab_id}] ⚠️ "
+                f"Gemini textarea not detected"
+            )
+
+            root = tk.Tk()
+
+            root.withdraw()
+
+            messagebox.showinfo(
+                "Gemini Interface Issue",
+                (
+                    "Gemini input area was not detected.\n\n"
+                    "Please verify the page manually.\n\n"
+                    "Press OK when Gemini is ready."
+                )
+            )
+
+            root.destroy()
+
+            await page.wait_for_selector(
+                'div[contenteditable="true"][role="textbox"]',
+                state="visible",
+                timeout=5000
+            )
+
+            print(
+                f"[Tab {tab_id}] ✅ "
+                f"Textarea detected again"
+            )
+        
+        
+        await clear_and_send_prompt(page, prompt)
+
+        await asyncio.sleep(3)
+
+        # ==========================================
+        # KEEP ORIGINAL SCROLL
+        # ==========================================
+
+        await scroll_page(page)
+
+        # ==========================================
+        # WAIT GEMINI STARTS RESPONDING
+        # ==========================================
+
+        try:
+
+            print(f"[Tab {tab_id}] ⏳ Waiting Gemini generation start...")
+
+            await page.wait_for_selector(
+                STOP_BUTTON,
+                state="visible",
+                timeout=15000
+            )
+
+            print(f"[Tab {tab_id}] 🤖 Gemini generation detected")
+
+        except Exception:
+
+            print(f"[Tab {tab_id}] ⚠️ Stop button not detected")
+
+        # ==========================================
+        # WAIT GEMINI FINISHES
+        # ==========================================
+
+        print(f"[Tab {tab_id}] ⏳ Waiting Gemini completion...")
+
+        gemini_completed = False
+
+        # ==========================================
+        # FIRST TRY: SEND BUTTON
+        # ==========================================
+
+        try:
+
+            await page.wait_for_selector(
+                SEND_BUTTON,
+                state="visible",
+                timeout=30000
+            )
+
+            print(
+                f"[Tab {tab_id}] ✅ "
+                f"Send button detected"
+            )
+
+            gemini_completed = True
+
+        except Exception:
+
+            print(
+                f"[Tab {tab_id}] ⚠️ "
+                f"Send button not detected"
+            )
+
+        # ==========================================
+        # SECOND TRY: MICROPHONE BUTTON
+        # ==========================================
+
+        if not gemini_completed:
+
+            try:
+
+                await page.wait_for_selector(
+                    'button[aria-label="Microphone"]',
+                    state="visible",
+                    timeout=30000
+                )
+
+                print(
+                    f"[Tab {tab_id}] 🎤 "
+                    f"Microphone detected"
+                )
+
+                gemini_completed = True
+
+            except Exception:
+
+                print(
+                    f"[Tab {tab_id}] ❌ "
+                    f"Microphone not detected"
+                )
+
+        # ==========================================
+        # FINAL VALIDATION
+        # ==========================================
+
+        if not gemini_completed:
+
+            raise Exception(
+                "Gemini completion not detected"
+            )
+
+        print(
+            f"[Tab {tab_id}] ✅ "
+            f"Gemini completed response"
+        )
 
         await asyncio.sleep(2)
 
-    print("🚨 AI did not respond in time")
-    return False
+        # ==========================================
+        # KEEP ORIGINAL SCROLL
+        # ==========================================
 
-# ============================================================================
-# DOWNLOAD AI RESULT FILE
-# ============================================================================
-# Clicks the download button in the AI interface,
-# waits for the file to be generated, and saves it locally.
-# Returns True if the file was downloaded successfully.
-async def descargar_archivo(page, selector_boton, nombre_archivo):
+        await scroll_page(page)
 
-    try:
+        success, text = await monitor_gemini(page)
 
-        await page.wait_for_timeout(5000)
+        if success and text:
+            return text
 
-        async with page.expect_download(timeout=120000) as download_info:
-            await page.locator(selector_boton).last.click()
+        print(f"[Tab {tab_id}] ⚠️ No response obtained")
 
-        download = await download_info.value
-
-        await download.save_as(nombre_archivo)
-
-        if os.path.exists(nombre_archivo) and os.path.getsize(nombre_archivo) > 0:
-
-            print("Descarga exitosa")
-            print(f"Ruta: {nombre_archivo}")
-
-            return True
-
-        else:
-
-            print("No se descargó archivo")
-
-            return False
+        return None
 
     except Exception as e:
 
-        print(f"Error descargando archivo: {e}")
+        print(f"[Tab {tab_id}] ❌ Error during search: {e}")
+
+        return None
+
+
+
+
+# ==========================================================
+# GEMINI TAB WORKER
+# Each tab runs independently in parallel.
+# Both tabs compete for processes from the same SQLite.
+# ==========================================================
+
+async def run_gemini_tab_worker(
+    tab_id: int,
+    context,
+    page,
+    sqlite_path: str,
+    prompt_general_path: str,
+    prompt_specific_path: str,
+    crp_dict: dict,
+    business_name: str,
+    email: str
+):
+    """
+    Independent worker for one Gemini tab.
+    Keeps pulling processes from SQLite and executing them
+    until no more pending processes are available.
+    Recreates the tab on failure and retries up to MAX_GEMINI_RETRIES times.
+    """
+
+    print(f"[Tab {tab_id}] 🚀 Worker started")
+
+    while True:
+
+        # Pull next available process for this tab
+        process = get_next_process(sqlite_path, "CRP")
+
+        if process is None:
+            print(f"[Tab {tab_id}] ✅ No more processes — worker done")
+            break
+
+        print(f"[Tab {tab_id}] ➡ Process: {process}")
+
+        # Determine search value
+        if process.startswith("CRP"):
+            crp_base     = process.replace("_String", "")
+            search_value = crp_dict.get(crp_base)
+            if not search_value:
+                print(f"[Tab {tab_id}] ⚠ Name not found for {crp_base}")
+                update_process_status(sqlite_path, process, "issue: CRP name not found")
+                continue
+
+        elif "Merchant_Name" in process:
+            search_value = str(business_name).strip()
+
+        elif "Merchant_Email" in process:
+            search_value = str(email).strip()
+
+        else:
+            print(f"[Tab {tab_id}] ⚠ Unknown process type: {process}")
+            update_process_status(sqlite_path, process, "issue: unknown process type")
+            continue
+
+        # Select prompt
+        is_string_search = process.endswith("_String")
+        prompt_path      = prompt_specific_path if is_string_search else prompt_general_path
+        search_type      = "SPECIFIC" if is_string_search else "GENERAL"
+        print(f"[Tab {tab_id}] {'🎯' if is_string_search else '🔍'} Using {search_type} prompt")
+
+        prompt = load_prompt(str(prompt_path), search_value)
+
+        # Execute with retries — each retry recreates the tab
+        success = False
+
+        for attempt in range(1, MAX_GEMINI_RETRIES + 1):
+            print(f"[Tab {tab_id}] 🔄 Attempt {attempt}/{MAX_GEMINI_RETRIES} for: {process}")
+
+            try:
+                # Navigate to Gemini with random delay before each attempt
+                nav_delay = random.uniform(3, 5)
+                print(f"[Tab {tab_id}] ⏳ Navigating (delay {nav_delay:.1f}s)...")
+                await asyncio.sleep(nav_delay)
+                await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=90_000)
+                await asyncio.sleep(2)
+                
+
+            except Exception as nav_error:
+                print(f"[Tab {tab_id}] ❌ Navigation failed: {nav_error} → recreating tab")
+                page = await recreate_gemini_tab(context, tab_id, failed_page=page)
+                continue
+
+            response = await run_gemini_on_page(page, prompt, tab_id)
+
+            if response:
+                # Save result
+                file_content   = f"=== {process} ===\n{response}"
+                case_number = Path(sqlite_path).stem.replace("ACI_", "")
+
+                ai_results_dir = (
+                    Path(sqlite_path).parent
+                    / "ai_results"
+                    / case_number
+                )
+
+                ai_results_dir.mkdir(parents=True, exist_ok=True)
+
+                output_file = ai_results_dir / f"Resultado_AI_{process}.txt"
+
+                with open(output_file, "w", encoding="utf-8") as f:
+                    f.write(file_content)
+
+                print(f"[Tab {tab_id}] ✅ Saved: {output_file}")
+                update_process_status(sqlite_path, process, "completed")
+                success = True
+                break
+
+            # Response failed — recreate tab and retry
+            print(f"[Tab {tab_id}] ⚠️ Attempt {attempt} failed → recreating tab")
+            page = await recreate_gemini_tab(context, tab_id, failed_page=page)
+
+        if not success:
+            print(f"[Tab {tab_id}] 🚨 Process {process} failed after {MAX_GEMINI_RETRIES} attempts")
+            update_process_status(
+                sqlite_path,
+                process,
+                f"issue: after {MAX_GEMINI_RETRIES} attempts gemini did not respond"
+            )
+
+    # ==========================================
+    # CLOSE TAB
+    # ==========================================
+
+    try:
+        if page and not page.is_closed():
+            await page.close()
+            print(f"[Tab {tab_id}] 🛑 Gemini tab closed")
+    except Exception as e:
+        print(f"[Tab {tab_id}] ⚠ Error closing tab: {e}")
+
+    print(f"[Tab {tab_id}] 🏁 Worker finished")
+
+    return None
+
+
+# ==========================================================
+# INITIALIZE BOTH GEMINI TABS AND RUN PARALLEL WORKERS
+# ==========================================================
+
+async def run_gemini_dual_tab_session(
+    playwright,
+    sqlite_path: str,
+    prompt_general_path: str,
+    prompt_specific_path: str,
+    crp_dict: dict,
+    business_name: str,
+    email: str
+):
+    """
+    Initialize both Gemini tabs with delay between them,
+    then run both tab workers in parallel via asyncio.gather.
+    Tab 1 starts immediately after opening.
+    Tab 2 starts after a 5-10s delay from Tab 1.
+    """
+
+    launch_chrome_if_needed()
+
+    print("[CDP] Connecting to Chrome via CDP...")
+    browser = await playwright.chromium.connect_over_cdp(CDP_URL)
+    context = browser.contexts[0]
+
+    try:
+
+        # ── Open Tab 1 ──
+        print("[Gemini] Opening Tab 1...")
+        page_tab1 = await open_single_gemini_tab(context, tab_id=1)
+
+        # ── Verify login on Tab 1 only ──
+        login_ok = await check_gemini_login(page_tab1)
+        if not login_ok:
+            raise Exception("Gemini login failed or was cancelled")
+
+        # ── Open Tab 2 with delay — Tab 1 starts working immediately after ──
+        # We launch both workers with gather, but Tab 2 worker has a built-in
+        # startup delay so Tab 1 gets a head start while Tab 2 is still opening.
+
+        async def tab1_worker():
+            return await run_gemini_tab_worker(
+                tab_id               = 1,
+                context              = context,
+                page                 = page_tab1,
+                sqlite_path          = sqlite_path,
+                prompt_general_path  = prompt_general_path,
+                prompt_specific_path = prompt_specific_path,
+                crp_dict             = crp_dict,
+                business_name        = business_name,
+                email                = email
+            )
+
+        async def tab2_worker():
+            # Delay + open Tab 2 before starting work
+            inter_tab_delay = random.uniform(3, 5)
+            print(f"[Gemini] ⏳ Waiting {inter_tab_delay:.1f}s before opening Tab 2...")
+            await asyncio.sleep(inter_tab_delay)
+
+            print("[Gemini] Opening Tab 2...")
+            page_tab2 = await open_single_gemini_tab(context, tab_id=2)
+
+            return await run_gemini_tab_worker(
+                tab_id               = 2,
+                context              = context,
+                page                 = page_tab2,
+                sqlite_path          = sqlite_path,
+                prompt_general_path  = prompt_general_path,
+                prompt_specific_path = prompt_specific_path,
+                crp_dict             = crp_dict,
+                business_name        = business_name,
+                email                = email
+            )
+
+        # ── Run both workers in parallel ──
+        print("🚀 Launching both Gemini tab workers in parallel...")
+        await asyncio.gather(tab1_worker(), tab2_worker())
+
+        print("✅ Both Gemini tab workers finished")
+        print("🔥 EXITING run_gemini_dual_tab_session")
+
+    finally:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+
+
+async def wait_gemini_response_complete(
+    page,
+    tab_name="Tab",
+    timeout_ms=180000
+):
+
+    try:
+
+        # ==========================================
+        # WAIT GEMINI STARTS GENERATING
+        # ==========================================
+
+        print(f"[{tab_name}] ⏳ Waiting Gemini generation start...")
+
+        await page.wait_for_selector(
+            'button[aria-label="Stop response"]',
+            timeout=15000
+        )
+
+        print(f"[{tab_name}] 🤖 Gemini generation detected")
+
+        # ==========================================
+        # WAIT GEMINI FINISHES
+        # ==========================================
+
+        print(f"[{tab_name}] ⏳ Waiting Gemini response completion...")
+
+        await page.wait_for_selector(
+            'button[aria-label="Send message"]',
+            timeout=timeout_ms
+        )
+
+        print(f"[{tab_name}] ✅ Gemini response completed")
+
+        return True
+
+    except Exception as e:
+
+        print(f"[{tab_name}] ❌ Gemini response timeout/error: {e}")
 
         return False
-
-
-
-
-
-
-
 
 

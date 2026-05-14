@@ -1,39 +1,27 @@
 Actúa como un analista de cumplimiento especializado en KYC/AML. Tu tarea es buscar en internet menciones, noticias, registros judiciales o documentos públicos que relacionen directamente a la siguiente entidad con actividades de riesgo:
 
-Entidad a investigar: [ENTIDAD]
-
-Tipo de entidad: Si el nombre corresponde a una persona natural (nombre y apellido), enfoca la búsqueda en antecedentes penales, judiciales o administrativos, vínculos con organizaciones criminales, y cualquier mención directa en fuentes oficiales o periodísticas. Si corresponde a una empresa o razón social, enfoca la búsqueda en vínculos institucionales con actividades ilícitas, sanciones de organismos regulatorios, y noticias que relacionen la organización con los conceptos de riesgo listados.
+Entidad a investigar: [LG Life is Good]
 
 Conceptos de riesgo a buscar:
 LAVADO, NARCOTRÁFICO, FRAUDE, CRIMEN, ACUSADO, ARRESTO, CORRUPCIÓN, SOBORNO, TERRORISTA, TERRORISMO, DROGA, PANDILLA, TRÁFICO, ARMA, VIOLACIÓN, PORNOGRAFÍA, ABUSO, SEXUAL, CARTEL, ESTAFA, BLANQUEO, EVASIÓN, SECUESTRO, TESTAFERRO, RÉGIMEN, NARCO, PARAMILITAR, VIOLENCIA, ARMADO
 
 REGLAS DE ANÁLISIS:
 - Busca activamente combinando el nombre de la entidad con cada uno de los conceptos de riesgo listados.
-- Busca en cualquier idioma relevante según el origen de la entidad, priorizando fuentes en inglés y en el idioma local del país de la entidad para maximizar la cobertura de resultados.
-- Redacta el resumen de cada hallazgo en español, pero NO traduzcas ni modifiques el link de la fuente.
-- PROHIBIDO incluir hallazgos sin link de fuente real. Si no tienes el link exacto y verificable, no incluyas el hallazgo bajo ninguna circunstancia.
-- PROHIBIDO inventar, acortar, modificar o parafrasear links. El link debe ser la URL exacta de la fuente.
 - Considera una coincidencia válida solo cuando exista relación clara, directa y verificable entre la entidad y el concepto de riesgo.
 - PROHIBIDO inventar, suponer, inferir o completar información que no esté respaldada por una fuente real.
 - PROHIBIDO reportar coincidencias por homónimos o similitud de nombres a menos que esté confirmado explícitamente.
 - PROHIBIDO incluir hallazgos sin link de fuente real. Si no tienes el link, no incluyas el hallazgo.
 - Si no encuentras fuentes reales que vinculen a la entidad con los conceptos de riesgo, NO reportes hallazgos.
-- Si encuentras información que podría corresponder a la entidad pero no puedes confirmarlo con certeza (por ejemplo, un homónimo), repórtalo como posible coincidencia indicando explícitamente la incertidumbre.
 
 REGLAS DE SALIDA:
 - Si NO hay hallazgos responde exactamente:
-La entidad [ENTIDAD] no presenta novedades ni antecedentes relacionados con actividades de riesgo o delitos.
+La entidad [LG Life is Good] no presenta novedades ni antecedentes relacionados con actividades de riesgo o delitos.
 
 - Si HAY hallazgos responde exactamente en este formato:
 Se encontraron antecedentes o noticias relacionadas con:
 1. [tipo de hallazgo] – [breve descripción del hecho]
 [link de la fuente]
 2. [tipo de hallazgo] – [breve descripción del hecho]
-[link de la fuente]
-
-- Si HAY posibles coincidencias no confirmadas responde agregando al final:
-Posibles coincidencias no confirmadas:
-1. [tipo de hallazgo] – [breve descripción] – NOTA: no se pudo confirmar que corresponda a la misma entidad.
 [link de la fuente]
 
 FORMATO OBLIGATORIO:
